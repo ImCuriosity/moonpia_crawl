@@ -1,0 +1,18 @@
+# 기본: 텍스트 자동 판별
+* text=auto eol=lf
+
+# Windows 배치 파일은 반드시 CRLF 여야 한다.
+# LF로 변환되면 cmd가 if 블록 파싱에 실패해 런처가 깨진다.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 셸 스크립트는 LF 고정 (CRLF면 실행 자체가 안 된다)
+*.sh text eol=lf
+
+*.py text eol=lf
+*.md text eol=lf
+*.csv text eol=lf
+
+# 수집 산출물은 저장소에 들어오면 안 되지만, 실수로 add 되더라도
+# diff에 통째로 펼쳐지지 않도록 바이너리 취급한다.
+data/** binary
