@@ -194,6 +194,91 @@ def test_fit_and_explain():
     assert preds["churn_prob"].is_monotonic_decreasing
 
 
+def test_episode_range_is_respected():
+    """min/max_episode 로 자른 범위 밖의 회차가 남으면 안 된다."""
+    ep_feat, _, _ = _fixture(n_novels=6, n_eps=40)
+    frame = M.build_episode_training_frame(ep_feat, min_episode=2, max_episode=25)
+    eps = frame.meta["episode_num"]
+    assert eps.min() >= 2 and eps.max() <= 25, "회차 범위 %d~%d" % (eps.min(), eps.max())
+
+
+def test_within_novel_label_balances_per_novel():
+    """작품 내 분위수 라벨은 작품마다 양성 비율이 비슷해야 한다.
+
+    전체 분위수를 쓰면 이탈률이 높은 작품 하나가 양성을 독식한다. 그러면
+    모델이 배우는 것은 '어떤 회차가 위험한가'가 아니라 '어떤 작품인가'다.
+    """
+    ep_feat, _, _ = _fixture(n_novels=6, n_eps=40)
+    frame = M.build_episode_training_frame(ep_feat, label_mode="within_novel",
+                                           threshold=0.75)
+    rates = (pd.DataFrame({"novel_id": frame.meta["novel_id"].to_numpy(),
+                           "y": frame.y})
+             .groupby("novel_id")["y"].mean())
+    assert rates.max() - rates.min() < 0.35, \
+        "작품별 양성 비율 편차가 큽니다: %s" % rates.round(2).to_dict()
+
+
+def test_fixed_effect_adds_novel_dummy():
+    """고정효과를 켜면 작품 식별자가 범주형 피처로 들어가야 한다."""
+    ep_feat, _, _ = _fixture()
+    plain = M.build_episode_training_frame(ep_feat)
+    fe = M.build_episode_training_frame(ep_feat, fixed_effect=True)
+    assert "novel_fe" not in plain.X.columns
+    assert "novel_fe" in fe.X.columns
+    assert fe.X["novel_fe"].nunique() == len(set(fe.groups))
+
+
+def test_factor_rank_is_out_of_fold():
+    """요인 순위의 기준성능은 in-sample이 아니라 교차검증 값이어야 한다.
+
+    학습 데이터에서 섞으면 RandomForest의 in-sample AUC(0.97+) 위에서 재게 되어
+    '외운 것'의 순위가 나온다.
+    """
+    if not HAS_SKLEARN:
+        print("       (scikit-learn 없음 — 건너뜀)")
+        return
+    ep_feat, _, _ = _fixture(n_novels=8, n_eps=40)
+    frame = M.build_episode_training_frame(ep_feat)
+    ranked = M.rank_factors(frame, model="random_forest", n_splits=4, n_repeats=3)
+    assert not ranked.empty
+    assert list(ranked.columns[:2]) == ["순위", "요인"]
+    base = ranked["기준성능"].iloc[0]
+    assert 0.3 < base < 0.98, "기준성능 %.3f — in-sample 값으로 보입니다" % base
+    assert ranked["순위"].is_monotonic_increasing
+    assert ranked["중요도"].is_monotonic_decreasing, "중요도 내림차순이 아닙니다"
+
+
+def test_factor_groups_cover_declared_features():
+    """선언한 피처가 어느 요인 그룹에도 안 잡히면 순위에서 조용히 빠진다."""
+    ep_feat, _, _ = _fixture()
+    frame = M.build_episode_training_frame(ep_feat, fixed_effect=True)
+    unmatched = [c for c in frame.X.columns
+                 if not any(M._match_group(c, keys)
+                            for keys in M.FACTOR_GROUPS.values())]
+    assert not unmatched, "요인 그룹에 배정되지 않은 피처: %s" % unmatched
+
+
+def test_novel_frame_needs_enough_novels():
+    """작품이 너무 적으면 작품 간 비교를 거부해야 한다."""
+    ep_feat, _, _ = _fixture(n_novels=3, n_eps=40)
+    try:
+        M.build_novel_training_frame(ep_feat, pd.DataFrame())
+    except ValueError as exc:
+        assert "작품" in str(exc)
+        return
+    raise AssertionError("작품 3개인데 작품 간 학습셋이 만들어졌습니다")
+
+
+def test_novel_frame_is_one_row_per_novel():
+    """작품 단위 학습셋은 작품 하나가 행 하나여야 한다."""
+    ep_feat, _, _ = _fixture(n_novels=8, n_eps=40)
+    frame = M.build_novel_training_frame(ep_feat, pd.DataFrame(), min_episodes=5)
+    assert len(frame) == frame.meta["novel_id"].nunique()
+    assert len(frame) <= 8
+    leaked = set(frame.X.columns) & M._EPISODE_LABEL_SOURCES
+    assert not leaked, "작품 피처에 라벨 출처가 남았습니다: %s" % sorted(leaked)
+
+
 def test_too_few_groups_is_rejected():
     """작품이 한 개뿐이면 교차검증이 불가능하다는 걸 명시적으로 알려야 한다."""
     if not HAS_SKLEARN:

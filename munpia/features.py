@@ -58,6 +58,47 @@ def build_episode_features(episodes: pd.DataFrame) -> pd.DataFrame:
 
     df = _mark_paywall(df)
     df = _mark_maturity(df)
+    df = _add_reaction_mix(df)
+    return df
+
+
+# 반응 버튼 5종. reaction_total은 like_count와 100% 같은 값이라 새 정보가 없다 —
+# 쓸 수 있는 건 이 다섯의 '구성비'뿐이다.
+REACTION_KINDS = ["best", "funny", "amazing", "cheer", "impressed"]
+
+
+def _add_reaction_mix(df: pd.DataFrame) -> pd.DataFrame:
+    """반응 버튼 구성비와 그 회차별 변화량.
+
+    본문을 수집하지 않으므로 "이 회차가 어땠나"의 직접 측정치가 없다. 구성비는
+    전 회차에 존재하는 유일한 내용 신호다 — 같은 추천수라도 '최고'가 눌린 회차와
+    '웃김'이 눌린 회차는 다른 회차다.
+
+    절대 구성비는 작품 성향(예: 코미디물은 늘 웃김이 높다)에 좌우되므로 직전
+    회차 대비 변화량(`d_*`)을 함께 만든다. 이탈은 작품의 평소 색깔보다 그로부터의
+    이탈(deviation)에 반응한다는 가정이다.
+    """
+    cols = ["reaction_%s" % k for k in REACTION_KINDS]
+    if not all(c in df.columns for c in cols):
+        return df
+
+    total = df[cols].apply(pd.to_numeric, errors="coerce").sum(axis=1)
+    total = total.astype("float64").replace(0, np.nan)
+
+    g = df.groupby("novel_id", sort=False)
+    for k, col in zip(REACTION_KINDS, cols):
+        pct = "reaction_%s_pct" % k
+        df[pct] = pd.to_numeric(df[col], errors="coerce") / total
+        df["d_%s" % pct] = df[pct] - g[pct].shift(1)
+
+    # 반응 다양성 — 한 종류에 쏠렸는가, 여러 반응이 섞였는가.
+    # 정규화 엔트로피라 0(전부 한 종류) ~ 1(고르게 분산) 범위다.
+    p = df[["reaction_%s_pct" % k for k in REACTION_KINDS]].to_numpy(dtype="float64")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ent = -np.nansum(np.where(p > 0, p * np.log(p), 0.0), axis=1)
+    df["reaction_entropy"] = ent / np.log(len(REACTION_KINDS))
+    df.loc[total.isna(), "reaction_entropy"] = np.nan
+    df["d_reaction_entropy"] = df["reaction_entropy"] - g["reaction_entropy"].shift(1)
     return df
 
 

@@ -6,6 +6,10 @@ pandas>=1.3
 scikit-learn>=1.1
 joblib>=1.1
 
+# 댓글 감정 분석 (`sentiment` 명령, KOTE). 없으면 감정 피처 없이 학습한다.
+#   pip install torch transformers
+#   CPU만 쓸 거면: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
 # 선택 — 브라우저 로그인이 필요할 때만 (캡차·SNS 로그인·2단계 인증)
 #   pip install playwright
 #   playwright install chromium

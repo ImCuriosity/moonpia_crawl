@@ -88,6 +88,33 @@ EPISODE_LAG_SOURCES: List[str] = [
 NOVEL_NUMERIC_FEATURES: List[str] = ["preference_count", "status_code"]
 NOVEL_CATEGORICAL_FEATURES: List[str] = ["genre_main"]
 
+# --------------------------------------------------------------- 내용(content) 신호
+#
+# 본문을 수집하지 않으므로 "이 회차가 어땠나"의 직접 측정치가 없다. 아래 둘이
+# 대리 지표다. 둘 다 **이번 회차와 동시에 관측된 값**이라 lag하지 않는다.
+#
+# 누수가 아닌 이유: 라벨은 view_count의 비율이고, 반응 구성비도 감정 점수도
+# view_count에서 산술적으로 유도되지 않는다. 모델이 라벨을 역산할 경로가 없다.
+# 다만 동시 관측이므로 **인과가 아니라 연관**이다 — "이탈이 큰 회차에서는 불만
+# 댓글이 많다"이지 "불만 댓글이 이탈을 일으킨다"가 아니다. 요인 순위는 후자가
+# 아니라 전자를 묻는 것이므로 이 설계가 맞다.
+REACTION_FEATURES: List[str] = [
+    "reaction_best_pct", "reaction_funny_pct", "reaction_amazing_pct",
+    "reaction_cheer_pct", "reaction_impressed_pct", "reaction_entropy",
+    # 작품 성향(코미디물은 늘 웃김이 높다)을 걷어낸 회차별 편차
+    "d_reaction_best_pct", "d_reaction_funny_pct", "d_reaction_amazing_pct",
+    "d_reaction_cheer_pct", "d_reaction_impressed_pct", "d_reaction_entropy",
+]
+
+SENTIMENT_FEATURES: List[str] = [
+    "sent_boredom", "sent_complaint", "sent_hostility", "sent_enjoyment",
+    "sent_anticipation", "sent_attachment", "sent_tension", "sent_confusion",
+    "sent_churn_index", "sent_n_comments",
+    "d_sent_boredom", "d_sent_complaint", "d_sent_hostility", "d_sent_enjoyment",
+    "d_sent_anticipation", "d_sent_attachment", "d_sent_tension",
+    "d_sent_confusion", "d_sent_churn_index",
+]
+
 # 독자 단위. 전부 "그 시점까지"의 누적값이라 미래를 보지 않는다.
 USER_FEATURES: List[str] = [
     "episode_num",
@@ -140,20 +167,29 @@ def build_episode_training_frame(
     label_mode: str = "quantile",
     threshold: float = 0.75,
     min_episode: int = 2,
+    max_episode: Optional[int] = None,
+    fixed_effect: bool = False,
 ) -> TrainingFrame:
     """`episode_features.csv`에서 회차 이탈 분류 학습셋을 만든다.
 
     Args:
         ep_feat: `features` 명령이 만든 회차 피처 테이블.
         label_mode:
-            "quantile" — 전체 회차의 이탈률 분포에서 상위 `threshold` 분위수를 넘으면 1.
-                          작품마다 이탈률 수준이 달라 절대 임계는 편향되기 쉽다.
-            "absolute" — `churn_step_clean >= threshold` 면 1.
+            "quantile"     — 전체 회차 이탈률 분포에서 상위 `threshold` 분위수 초과면 1.
+            "within_novel" — **작품 내부** 분위수 기준. 작품마다 이탈률 수준이
+                             다른 것을 라벨 단계에서 흡수한다. 요인 순위를 볼
+                             때는 이쪽이 맞다 — "어느 작품이 이탈이 큰가"가 아니라
+                             "한 작품 안에서 어떤 회차가 유독 빠지는가"를 묻게 된다.
+            "absolute"     — `churn_step_clean >= threshold` 면 1.
         threshold: 분위수(0~1) 또는 절대 이탈률.
-        min_episode: 이 회차 번호 미만은 제외. 1화는 직전 회차가 없어 라벨이 없다.
-
-    Returns:
-        TrainingFrame. 라벨이 NaN인 행(페이월 경계·미성숙 회차)은 전부 빠진다.
+        min_episode: 이 회차 번호 미만 제외. 1화는 직전 회차가 없어 라벨이 없다.
+        max_episode: 이 회차 번호 초과 제외. 25로 두면 무료 구간만 본다 —
+            유료 구간은 view_count가 세는 대상이 바뀌어 이탈률이 무의미하고,
+            댓글도 없어 내용 신호가 통째로 빈다.
+        fixed_effect: True면 novel_id를 범주형 피처로 넣는다 (작품 고정효과).
+            작품 간 차이를 흡수해 회차 간 변동만 남긴다. **이 경우 GroupKFold를
+            쓰면 안 된다** — 검증 폴드의 작품 더미는 학습에서 본 적이 없어 무용지물이
+            된다. `cross_validate(group_split=False)`와 짝지어 쓴다.
     """
     if ep_feat.empty:
         raise ValueError("episode_features가 비어 있습니다")
@@ -164,32 +200,48 @@ def build_episode_training_frame(
     df = ep_feat.sort_values(["novel_id", "episode_num"]).reset_index(drop=True)
     df = _add_episode_lags(df)
 
+    ep_num = pd.to_numeric(df["episode_num"], errors="coerce")
     label_raw = pd.to_numeric(df["churn_step_clean"], errors="coerce")
-    usable = label_raw.notna() & (pd.to_numeric(df["episode_num"],
-                                                errors="coerce") >= min_episode)
+    usable = label_raw.notna() & (ep_num >= min_episode)
+    if max_episode is not None:
+        usable &= ep_num <= max_episode
     if not usable.any():
         raise ValueError(
-            "학습 가능한 회차가 없습니다. churn_step_clean이 전부 비어 있습니다 — "
-            "수집 회차가 너무 적거나 전부 미성숙(게시 7일 미만)일 수 있습니다")
+            "학습 가능한 회차가 없습니다. churn_step_clean이 전부 비어 있거나 "
+            "회차 범위(%s~%s) 안에 남는 행이 없습니다"
+            % (min_episode, max_episode if max_episode is not None else "끝"))
 
     df = df[usable].reset_index(drop=True)
     label_raw = label_raw[usable].reset_index(drop=True)
 
     if label_mode == "quantile":
         cut = float(label_raw.quantile(threshold))
-        desc = "churn_step_clean >= %.4f (상위 %.0f%% 분위)" % (cut, (1 - threshold) * 100)
+        y = (label_raw >= cut).astype(int).to_numpy()
+        desc = "churn_step_clean >= %.4f (전체 상위 %.0f%%)" % (cut, (1 - threshold) * 100)
+    elif label_mode == "within_novel":
+        # 작품별로 따로 자른다. 작품 수준 차이가 라벨에서 사라지므로 남는 것은
+        # "그 작품 기준으로 이 회차가 유독 빠졌는가" 뿐이다.
+        cut = label_raw.groupby(df["novel_id"]).transform(
+            lambda s: s.quantile(threshold))
+        y = (label_raw >= cut).astype(int).to_numpy()
+        desc = "작품 내 상위 %.0f%% 회차 (작품별 분위수)" % ((1 - threshold) * 100)
     elif label_mode == "absolute":
-        cut = float(threshold)
-        desc = "churn_step_clean >= %.4f (절대 임계)" % cut
+        y = (label_raw >= float(threshold)).astype(int).to_numpy()
+        desc = "churn_step_clean >= %.4f (절대 임계)" % threshold
     else:
-        raise ValueError("label_mode는 quantile 또는 absolute 여야 합니다: %r" % label_mode)
-
-    y = (label_raw >= cut).astype(int).to_numpy()
+        raise ValueError(
+            "label_mode는 quantile / within_novel / absolute 여야 합니다: %r" % label_mode)
 
     lag_cols = ["prev_%s" % c for c in EPISODE_LAG_SOURCES if "prev_%s" % c in df.columns]
-    numeric = [c for c in EPISODE_STATIC_FEATURES + lag_cols + NOVEL_NUMERIC_FEATURES
+    numeric = [c for c in (EPISODE_STATIC_FEATURES + lag_cols
+                           + REACTION_FEATURES + SENTIMENT_FEATURES
+                           + NOVEL_NUMERIC_FEATURES)
                if c in df.columns]
     categorical = [c for c in NOVEL_CATEGORICAL_FEATURES if c in df.columns]
+
+    if fixed_effect:
+        df["novel_fe"] = df["novel_id"].astype(str)
+        categorical = categorical + ["novel_fe"]
 
     _assert_no_leakage(numeric + categorical, _EPISODE_LABEL_SOURCES)
 
@@ -347,7 +399,112 @@ def _running_max_consecutive(appear: pd.DataFrame, g) -> pd.Series:
     return run_len.groupby([appear["novel_id"], appear["user_key"]]).cummax()
 
 
+# ============================================================ 작품 단위 학습 데이터
+def build_novel_training_frame(
+    ep_feat: pd.DataFrame,
+    novels: pd.DataFrame,
+    threshold: float = 0.5,
+    early_upto: int = 25,
+    min_episodes: int = 10,
+) -> TrainingFrame:
+    """"왜 이 작품이 저 작품보다 이탈이 큰가"를 묻는 작품 단위 학습셋.
+
+    회차 단위 모델과는 다른 질문이다. 여기서는 **작품 하나가 표본 하나**이므로
+    수집한 작품 수가 곧 표본 수다. 회차를 아무리 많이 모아도 이 표본은 늘지 않는다.
+
+    라벨은 초반 구간(1~`early_upto`화)의 평균 이탈률이 중앙값보다 높은가다.
+    초반으로 한정하는 이유는 이탈의 거의 전부가 거기서 일어나고, 유료 구간은
+    view_count가 세는 대상이 바뀌어 작품 간 비교가 성립하지 않기 때문이다.
+
+    Args:
+        threshold: 라벨 분위수. 0.5면 중앙값 기준 상·하위 이분.
+        min_episodes: 초반 구간에 이 수 미만의 유효 회차만 있는 작품은 제외.
+    """
+    if ep_feat.empty:
+        raise ValueError("episode_features가 비어 있습니다")
+
+    df = ep_feat.copy()
+    ep_num = pd.to_numeric(df["episode_num"], errors="coerce")
+    early = df[(ep_num >= 2) & (ep_num <= early_upto)
+               & pd.to_numeric(df["churn_step_clean"], errors="coerce").notna()]
+    if early.empty:
+        raise ValueError("초반 구간(2~%d화)에 유효한 이탈률이 없습니다" % early_upto)
+
+    # 작품마다 회차 단위 값을 평균 내어 작품 한 행으로 접는다
+    agg_map = {"churn_early": ("churn_step_clean", "mean"),
+               "n_episodes": ("churn_step_clean", "size"),
+               "pages_mean": ("pages", "mean"),
+               "pages_std": ("pages", "std"),
+               "gap_mean": ("days_since_prev", "mean"),
+               "gap_std": ("days_since_prev", "std")}
+    for c in REACTION_FEATURES + SENTIMENT_FEATURES:
+        if c in early.columns and not c.startswith("d_"):
+            agg_map[c + "_mean"] = (c, "mean")
+
+    agg = early.groupby("novel_id").agg(**agg_map).reset_index()
+    agg = agg[agg["n_episodes"] >= min_episodes]
+    if len(agg) < 4:
+        raise ValueError(
+            "작품 %d개로는 작품 간 비교를 할 수 없습니다. 최소 수십 개, 신뢰할 만한 "
+            "요인 순위를 원하면 200개 이상 수집하세요" % len(agg))
+
+    if not novels.empty:
+        keep = [c for c in ("novel_id", "genre_main", "status_code", "is_adult",
+                            "preference_count", "chapter_count",
+                            "free_chapter_count", "total_characters",
+                            "reader_male_count", "reader_female_count",
+                            "reader_age10s_pct", "reader_age20s_pct",
+                            "reader_age30s_pct", "reader_age40s_pct",
+                            "reader_age50s_pct") if c in novels.columns]
+        agg = agg.merge(novels[keep].drop_duplicates("novel_id"),
+                        on="novel_id", how="left")
+
+    if {"reader_male_count", "reader_female_count"} <= set(agg.columns):
+        tot = (pd.to_numeric(agg["reader_male_count"], errors="coerce").fillna(0)
+               + pd.to_numeric(agg["reader_female_count"], errors="coerce").fillna(0))
+        agg["reader_male_ratio"] = pd.to_numeric(
+            agg["reader_male_count"], errors="coerce") / tot.replace(0, np.nan)
+        agg = agg.drop(columns=["reader_male_count", "reader_female_count"])
+
+    cut = float(agg["churn_early"].quantile(threshold))
+    y = (agg["churn_early"] >= cut).astype(int).to_numpy()
+
+    drop = {"novel_id", "churn_early", "n_episodes", "genre_main"}
+    numeric = [c for c in agg.columns
+               if c not in drop and pd.api.types.is_numeric_dtype(agg[c])]
+    categorical = [c for c in ("genre_main",) if c in agg.columns]
+
+    _assert_no_leakage(numeric + categorical, _EPISODE_LABEL_SOURCES)
+
+    return TrainingFrame(
+        X=agg[numeric + categorical].copy(),
+        y=y,
+        # 작품이 곧 표본이라 묶을 그룹이 없다. 층화 분할을 쓴다.
+        groups=agg["novel_id"].to_numpy(),
+        numeric=numeric,
+        categorical=categorical,
+        meta=agg[["novel_id", "churn_early", "n_episodes"]].copy(),
+        label_desc="초반 %d화 평균 이탈률 >= %.4f (작품 상위 %.0f%%)"
+                   % (early_upto, cut, (1 - threshold) * 100),
+    )
+
+
 # ==================================================================== 모델 정의
+def _l1_kwargs() -> Dict[str, object]:
+    """L1 정규화를 sklearn 버전에 맞는 방식으로 지정한다.
+
+    sklearn 1.8에서 `penalty`가 폐기되고 `l1_ratio`로 옮겨갔다. 두 방식을 섞으면
+    경고가 쏟아지고 1.10부터는 아예 동작하지 않는다. 버전을 보고 고른다.
+    """
+    from sklearn import __version__ as skl_version
+
+    try:
+        major, minor = (int(p) for p in skl_version.split(".")[:2])
+    except ValueError:          # 개발 버전 문자열 등 — 신형으로 간주한다
+        return {"l1_ratio": 1.0}
+    return {"l1_ratio": 1.0} if (major, minor) >= (1, 8) else {"penalty": "l1"}
+
+
 def build_models(class_weight: Optional[str] = None,
                  random_state: int = 42) -> Dict[str, object]:
     """비교할 sklearn 추정기들.
@@ -370,6 +527,12 @@ def build_models(class_weight: Optional[str] = None,
         "dummy": DummyClassifier(strategy="prior"),
         "logistic": LogisticRegression(
             max_iter=2000, class_weight=class_weight, random_state=random_state),
+        # L1은 계수를 0으로 밀어 피처를 스스로 고른다. 표본 수백 행에 피처 수십 개인
+        # 지금 상황에서 "무엇이 실제로 남는가"를 보는 데 L2보다 곧다.
+        "logistic_l1": LogisticRegression(
+            solver="saga", C=0.3, max_iter=5000,
+            class_weight=class_weight, random_state=random_state,
+            **_l1_kwargs()),
         "random_forest": RandomForestClassifier(
             n_estimators=400, min_samples_leaf=5, class_weight=class_weight,
             random_state=random_state, n_jobs=-1),
@@ -402,7 +565,9 @@ def build_pipeline(estimator, numeric: Sequence[str],
             "cat",
             Pipeline([
                 ("impute", SimpleImputer(strategy="most_frequent")),
-                ("onehot", OneHotEncoder(handle_unknown="ignore", min_frequency=5,
+                # min_frequency를 걸면 작품 고정효과 더미가 "희귀 범주"로 뭉개진다.
+            # 작품 하나하나가 흡수해야 할 고유 수준이므로 묶으면 안 된다.
+            ("onehot", OneHotEncoder(handle_unknown="ignore",
                                          sparse_output=False)),
             ]),
             list(categorical),
@@ -417,32 +582,47 @@ def build_pipeline(estimator, numeric: Sequence[str],
 # ==================================================================== 교차검증
 def cross_validate(frame: TrainingFrame, n_splits: int = 5,
                    class_weight: Optional[str] = None,
-                   random_state: int = 42) -> pd.DataFrame:
-    """작품(또는 독자) 단위 GroupKFold로 모델들을 평가한다.
+                   random_state: int = 42,
+                   group_split: bool = True) -> pd.DataFrame:
+    """모델들을 교차검증한다. 분할 방식이 곧 "무엇을 묻는가"를 정한다.
 
-    무작위 K-Fold를 쓰면 안 된다. 같은 작품의 회차가 학습·검증에 섞이면 모델이
-    그 작품의 조회수 수준을 외우고, 새 작품에 대한 일반화 성능이 과대평가된다.
+    group_split=True — 작품(독자) 단위 GroupKFold. **"처음 보는 작품의 이탈을
+        맞힐 수 있는가"** 를 묻는다. 일반화 성능. 작품 고정효과와 함께 쓰면 안 된다.
+
+    group_split=False — 회차를 층화 무작위 분할. **"한 작품 안에서 어떤 회차가
+        유독 빠지는가"** 를 묻는다. 요인 순위를 볼 때 쓰는 모드이고, 작품 고정효과가
+        의미를 가지려면 같은 작품이 학습·검증 양쪽에 있어야 하므로 이쪽이어야 한다.
+
+    두 모드의 숫자를 나란히 비교하면 안 된다. 묻는 질문이 다르다.
     """
     from sklearn.metrics import (average_precision_score, brier_score_loss,
                                  roc_auc_score)
-    from sklearn.model_selection import GroupKFold
+    from sklearn.model_selection import GroupKFold, StratifiedKFold
 
-    n_groups = len(np.unique(frame.groups))
-    splits = int(min(n_splits, n_groups))
-    if splits < 2:
-        raise ValueError(
-            "그룹이 %d개뿐이라 교차검증을 할 수 없습니다. 수집 작품 수를 늘리세요"
-            % n_groups)
-    if splits < n_splits:
-        log.warning("그룹이 %d개라 폴드를 %d개로 줄입니다", n_groups, splits)
+    if group_split:
+        n_groups = len(np.unique(frame.groups))
+        splits = int(min(n_splits, n_groups))
+        if splits < 2:
+            raise ValueError(
+                "그룹이 %d개뿐이라 그룹 교차검증을 할 수 없습니다. 작품 수를 늘리거나 "
+                "group_split=False로 회차 단위 분할을 쓰세요" % n_groups)
+        if splits < n_splits:
+            log.warning("그룹이 %d개라 폴드를 %d개로 줄입니다", n_groups, splits)
+        cv = GroupKFold(n_splits=splits)
+        split_args = (frame.X, frame.y, frame.groups)
+    else:
+        minority = int(min(np.bincount(frame.y.astype(int))))
+        splits = int(min(n_splits, max(minority, 2)))
+        cv = StratifiedKFold(n_splits=splits, shuffle=True,
+                             random_state=random_state)
+        split_args = (frame.X, frame.y)
 
-    cv = GroupKFold(n_splits=splits)
     base_rate = float(frame.y.mean())
     rows = []
 
     for name, est in build_models(class_weight, random_state).items():
         aucs, aps, briers = [], [], []
-        for train_idx, test_idx in cv.split(frame.X, frame.y, frame.groups):
+        for train_idx, test_idx in cv.split(*split_args):
             y_tr, y_te = frame.y[train_idx], frame.y[test_idx]
             if len(np.unique(y_tr)) < 2 or len(np.unique(y_te)) < 2:
                 continue  # 한 클래스만 있는 폴드는 AUC가 정의되지 않는다
@@ -514,6 +694,107 @@ def explain(pipe, frame: TrainingFrame) -> pd.DataFrame:
             .sort_values("importance", ascending=False))
 
 
+# 요인 그룹 — 개별 컬럼이 아니라 "요인" 단위로 순위를 매기기 위한 정의.
+# 접두사/정확 이름으로 매칭한다. 순서는 출력 순서와 무관하다.
+FACTOR_GROUPS: Dict[str, List[str]] = {
+    "연재 리듬(공백)": ["days_since_prev", "days_since_first"],
+    "회차 분량": ["pages"],
+    "연재 위치": ["episode_num"],
+    "페이월 구조": ["is_free", "is_paywall_boundary", "episodes_from_paywall",
+                "has_paywall", "is_adult", "is_notice"],
+    "직전 회차 성과": ["prev_"],
+    "독자 반응 구성": ["reaction_"],
+    "댓글 감정(KOTE)": ["sent_", "d_sent_"],
+    "작품 고유 특성": ["novel_fe", "genre_main", "preference_count",
+                 "status_code", "reader_", "chapter_count",
+                 "free_chapter_count", "total_characters"],
+}
+
+
+def _match_group(column: str, keys: Sequence[str]) -> bool:
+    return any(column == k or column.startswith(k) for k in keys)
+
+
+def rank_factors(frame: TrainingFrame, model: str = "random_forest",
+                 n_splits: int = 5, n_repeats: int = 10,
+                 group_split: bool = True, class_weight: Optional[str] = None,
+                 random_state: int = 42, scoring: str = "roc_auc") -> pd.DataFrame:
+    """요인 **그룹** 단위 순열 중요도 — "무엇이 이탈을 가장 크게 좌우하는가".
+
+    두 가지를 의도적으로 다르게 했다.
+
+    **그룹 단위로 섞는다.** 개별 피처 하나씩 섞으면, `sent_boredom`과
+    `sent_complaint`처럼 상관이 높은 피처는 서로가 서로를 대신해 둘 다
+    "중요하지 않다"고 나온다. 같은 요인은 함께 섞어야 그 요인 전체의 기여가 보인다.
+    표본이 수백 행인데 피처가 수십 개인 상황에서 추정 안정성도 훨씬 낫다.
+
+    **검증 폴드에서 섞는다.** 학습 데이터에서 섞으면 모델이 외운 것을 재는 꼴이다.
+    RandomForest는 in-sample AUC가 0.97까지 올라가는데 그 위에서 잰 중요도는
+    일반화되는 요인의 순위가 아니다. 폴드마다 학습은 train으로, 순열과 측정은
+    test로 한다.
+
+    Returns:
+        순위 · 요인 · 컬럼 수 · 중요도(AUC 하락폭) · 표준편차 · 기준성능(폴드 평균).
+        중요도가 클수록 그 요인 없이는 못 맞힌다는 뜻이다.
+    """
+    from sklearn.metrics import get_scorer
+    from sklearn.model_selection import GroupKFold, StratifiedKFold
+
+    scorer = get_scorer(scoring)
+    est = build_models(class_weight, random_state)[model]
+
+    if group_split:
+        n_groups = len(np.unique(frame.groups))
+        splits = int(min(n_splits, n_groups))
+        if splits < 2:
+            raise ValueError("그룹이 %d개뿐이라 요인 순위를 낼 수 없습니다" % n_groups)
+        cv = GroupKFold(n_splits=splits)
+        split_args = (frame.X, frame.y, frame.groups)
+    else:
+        minority = int(min(np.bincount(frame.y.astype(int))))
+        splits = int(min(n_splits, max(minority, 2)))
+        cv = StratifiedKFold(n_splits=splits, shuffle=True, random_state=random_state)
+        split_args = (frame.X, frame.y)
+
+    groups_cols = {name: [c for c in frame.X.columns if _match_group(c, keys)]
+                   for name, keys in FACTOR_GROUPS.items()}
+    groups_cols = {k: v for k, v in groups_cols.items() if v}
+
+    drops: Dict[str, List[float]] = {k: [] for k in groups_cols}
+    bases: List[float] = []
+    rng = np.random.default_rng(random_state)
+
+    for train_idx, test_idx in cv.split(*split_args):
+        y_tr, y_te = frame.y[train_idx], frame.y[test_idx]
+        if len(np.unique(y_tr)) < 2 or len(np.unique(y_te)) < 2:
+            continue
+        pipe = build_pipeline(est, frame.numeric, frame.categorical)
+        pipe.fit(frame.X.iloc[train_idx], y_tr)
+        X_te = frame.X.iloc[test_idx]
+        base = scorer(pipe, X_te, y_te)
+        bases.append(base)
+
+        for name, cols in groups_cols.items():
+            for _ in range(n_repeats):
+                shuffled = X_te.copy()
+                # 그룹 내 컬럼을 같은 순열로 옮긴다. 행 단위로 통째로 섞어야
+                # 그룹 내부의 상관 구조는 유지되고 라벨과의 관계만 끊긴다.
+                order = rng.permutation(len(shuffled))
+                shuffled[cols] = shuffled[cols].to_numpy()[order]
+                drops[name].append(base - scorer(pipe, shuffled, y_te))
+
+    if not bases:
+        raise ValueError("유효한 폴드가 없어 요인 순위를 낼 수 없습니다")
+
+    rows = [{"요인": name, "컬럼수": len(groups_cols[name]),
+             "중요도": float(np.mean(v)), "표준편차": float(np.std(v))}
+            for name, v in drops.items() if v]
+    out = pd.DataFrame(rows).sort_values("중요도", ascending=False).reset_index(drop=True)
+    out.insert(0, "순위", range(1, len(out) + 1))
+    out["기준성능"] = float(np.mean(bases))
+    return out
+
+
 def _feature_names(pipe, frame: TrainingFrame) -> List[str]:
     """ColumnTransformer가 만든 최종 피처 이름 (원핫·결측 지시자 포함)."""
     try:
@@ -536,39 +817,69 @@ def run(ep_feat: pd.DataFrame, comments: pd.DataFrame, episodes: pd.DataFrame,
         out_dir: str, task: str = "episode", model: str = "logistic",
         label_mode: str = "quantile", threshold: float = 0.75,
         n_splits: int = 5, class_weight: Optional[str] = None,
+        min_episode: int = 2, max_episode: Optional[int] = None,
+        fixed_effect: bool = False, novels: Optional[pd.DataFrame] = None,
         save_model: bool = True) -> Dict[str, object]:
     """학습 → 교차검증 → 해석 → 저장을 한 번에 수행한다."""
     if task == "episode":
-        frame = build_episode_training_frame(ep_feat, label_mode, threshold)
+        frame = build_episode_training_frame(
+            ep_feat, label_mode, threshold, min_episode=min_episode,
+            max_episode=max_episode, fixed_effect=fixed_effect)
     elif task == "user":
         frame = build_user_training_frame(comments, episodes)
+    elif task == "novel":
+        frame = build_novel_training_frame(
+            ep_feat, novels if novels is not None else pd.DataFrame(),
+            early_upto=max_episode or 25)
     else:
-        raise ValueError("task는 episode 또는 user 여야 합니다: %r" % task)
+        raise ValueError("task는 episode / user / novel 이어야 합니다: %r" % task)
+
+    # 작품 고정효과는 같은 작품이 학습·검증 양쪽에 있어야 의미가 있고,
+    # 작품 단위 표본은 묶을 그룹 자체가 없다. 둘 다 그룹 분할을 쓰면 안 된다.
+    group_split = not fixed_effect and task != "novel"
 
     n_groups = len(np.unique(frame.groups))
     log.info("[%s] 표본 %d행 · 그룹 %d개 · 양성 %d행(%.1f%%)",
              task, len(frame), n_groups, int(frame.y.sum()),
              100.0 * frame.y.mean())
     log.info("[%s] 라벨 정의: %s", task, frame.label_desc)
-    log.info("[%s] 피처 %d개 (수치 %d · 범주 %d)", task,
+    log.info("[%s] 피처 %d개 (수치 %d · 범주 %d)%s", task,
              len(frame.numeric) + len(frame.categorical),
-             len(frame.numeric), len(frame.categorical))
+             len(frame.numeric), len(frame.categorical),
+             " · 작품 고정효과 ON" if fixed_effect else "")
 
-    scores = cross_validate(frame, n_splits=n_splits, class_weight=class_weight)
+    scores = cross_validate(frame, n_splits=n_splits, class_weight=class_weight,
+                            group_split=group_split)
     if not scores.empty:
-        log.info("[%s] 교차검증 (GroupKFold, 그룹=%s)\n%s", task,
-                 "novel_id" if task == "episode" else "user_key",
-                 scores.to_string(index=False))
+        if group_split:
+            how = "GroupKFold, 그룹=%s — 처음 보는 %s에 대한 일반화" % (
+                ("novel_id", "작품") if task == "episode" else ("user_key", "독자"))
+        else:
+            how = "StratifiedKFold — 작품 내 회차 간 변동 설명"
+        log.info("[%s] 교차검증 (%s)\n%s", task, how, scores.to_string(index=False))
 
+    # 요인 순위는 교차검증에서 가장 잘 맞힌 모델로 뽑는다. 설명력이 없는 모델의
+    # 중요도는 읽을 가치가 없기 때문이다.
+    best = model
+    if not scores.empty:
+        top = scores.iloc[0]
+        if top["model"] != "dummy":
+            best = str(top["model"])
     pipe = fit_final(frame, model=model, class_weight=class_weight)
     expl = explain(pipe, frame)
     preds = predict_frame(pipe, frame)
+
+    factors = rank_factors(frame, model=best, n_splits=n_splits,
+                           group_split=group_split, class_weight=class_weight)
+    log.info("[%s] 요인 순위 (%s · 검증 폴드 순열 = ROC-AUC 하락폭)\n%s",
+             task, best, factors.to_string(index=False))
 
     os.makedirs(out_dir, exist_ok=True)
     prefix = os.path.join(out_dir, "%s_churn" % task)
     scores.to_csv(prefix + "_cv_scores.csv", index=False, encoding="utf-8-sig")
     expl.to_csv(prefix + "_explain.csv", index=False, encoding="utf-8-sig")
     preds.to_csv(prefix + "_predictions.csv", index=False, encoding="utf-8-sig")
+    factors.to_csv(prefix + "_factor_rank.csv", index=False, encoding="utf-8-sig")
 
     summary = {
         "task": task,
@@ -577,8 +888,12 @@ def run(ep_feat: pd.DataFrame, comments: pd.DataFrame, episodes: pd.DataFrame,
         "groups": int(n_groups),
         "positive_rate": float(frame.y.mean()),
         "label": frame.label_desc,
+        "cv_split": "group" if group_split else "stratified",
+        "fixed_effect": bool(fixed_effect),
         "features": list(frame.X.columns),
         "cv": scores.to_dict("records"),
+        "factor_rank_model": best,
+        "factor_rank": factors.to_dict("records"),
     }
     with open(prefix + "_summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
@@ -590,4 +905,5 @@ def run(ep_feat: pd.DataFrame, comments: pd.DataFrame, episodes: pd.DataFrame,
     log.info("[%s] 저장 완료: %s_*.csv / _summary.json%s", task, prefix,
              " / _model.joblib" if save_model else "")
     return {"frame": frame, "scores": scores, "pipeline": pipe,
-            "explain": expl, "predictions": preds, "summary": summary}
+            "explain": expl, "predictions": preds, "factors": factors,
+            "summary": summary}

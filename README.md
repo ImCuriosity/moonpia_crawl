@@ -1,9 +1,9 @@
-# 문피아 웹소설 데이터 수집 · 전처리 파이프라인
+﻿# 문피아 웹소설 데이터 수집 · 전처리 파이프라인
 
 <p>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white">
   <img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-56%20passing-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-72%20passing-brightgreen">
   <img alt="Status" src="https://img.shields.io/badge/status-verified%20on%20live%20site-success">
 </p>
 
@@ -13,8 +13,8 @@ CSV/JSON으로 내보내고, 이탈률·충성도 파생 지표를 만든 다음
 **scikit-learn 모델로 이탈을 예측**하는 데까지 이어집니다.
 
 ```
-crawl  ──▶  features  ──▶  train
-수집        파생 지표        이탈 예측 (로지스틱 회귀 외)
+crawl  ──▶  features  ──▶  sentiment  ──▶  train
+수집        파생 지표      댓글 감정(KOTE)    이탈 예측 · 요인 순위
 ```
 
 **실측 검증 완료** (2026-07-24, 25개 작품 대상):
@@ -55,7 +55,9 @@ Windows에서 `run.bat` 더블클릭이면 끝납니다. → [빠른 시작](#�
 - [출력 스키마](#출력-스키마)
 - [전처리 규칙](#전처리-규칙-요구사항-34)
 - [파생 피처](#파생-피처-features-명령)
+- [댓글 감정 분석](#댓글-감정-분석-sentiment-명령)
 - [이탈 예측 모델](#이탈-예측-모델-train-명령)
+- [이탈 요인 순위](#이탈-요인-순위)
 - [예외 처리 · 크롤링 매너](#예외-처리--크롤링-매너-요구사항-4)
 - [구조](#구조)
 - [분석 예시](#분석-예시)
@@ -248,15 +250,29 @@ python -m munpia.cli discover --genres FANTASY,HEROISM --free-only --crawl
 python -m munpia.cli features --in data/raw --out data/features
 ```
 
-### 4. 이탈 예측 모델 학습
+### 4. 댓글 감정 분석 (KOTE)
 
 ```bash
-python -m munpia.cli train --features data/features --raw data/raw --out data/models
+pip install torch transformers
+python -m munpia.cli sentiment --raw data/raw --out data/features
+```
+
+회차 단위 '내용' 신호를 만듭니다. 자세한 내용은 [댓글 감정 분석](#댓글-감정-분석-sentiment-명령) 참고.
+
+### 5. 이탈 예측 모델 학습 · 요인 순위
+
+```bash
+# 요인 순위를 볼 때 (권장 설정)
+python -m munpia.cli train --task episode --max-episode 25 \
+    --label-mode within_novel --fixed-effect
+
+# 새 작품 예측력을 볼 때
+python -m munpia.cli train --task all --max-episode 25
 ```
 
 자세한 내용은 [이탈 예측 모델](#이탈-예측-모델-train-명령) 참고.
 
-### 5. (선택) 유료 회차 댓글용 로그인
+### 6. (선택) 유료 회차 댓글용 로그인
 
 `.env.example`을 복사해 자격증명을 채웁니다:
 
@@ -425,6 +441,20 @@ comments.parent_id  ──▶  comments.comment_id   (대댓글 self-join)
 | `days_since_prev` | 직전 회차와의 연재 간격(일). 공백↔이탈 가설 검증용 |
 | `view_ma5` `view_vs_ma5` | 5회차 이동평균 대비 편차. 특정 회차의 급락 탐지 |
 | `like_per_view` `comment_per_view` `reaction_per_view` | 조회 대비 참여 강도 |
+| `reaction_best_pct` … `reaction_impressed_pct` | 반응 버튼 5종 **구성비** |
+| `d_reaction_*_pct` | 직전 회차 대비 구성비 변화량 |
+| `reaction_entropy` `d_reaction_entropy` | 반응 다양성 (0=한 종류 쏠림, 1=고르게 분산) |
+
+> #### 반응 버튼에서 쓸 수 있는 것은 '구성비'뿐입니다
+>
+> 실측에서 **`reaction_total`은 `like_count`와 100% 같은 값**이었습니다. 총합은
+> 추천수의 별칭이라 새 정보가 없습니다.
+>
+> 남는 것은 다섯 종류의 비율인데, 여기도 **'웃김'이 95.9%** 를 차지합니다
+> (최고 2.0% · 응원 1.5% · 놀람 0.3% · 감동 0.3%). 문피아 UI 특성으로 보입니다.
+> 그래도 작품 **내부** 변동이 작품 **간** 변동보다 크므로(비율 1.35) 회차별 상대
+> 비교에는 쓸 수 있습니다. 절대 구성비는 작품 성향에 좌우되니 `d_*` 변화량을
+> 함께 보세요.
 
 > #### ⚠️ `churn_step`을 그대로 쓰면 안 되는 이유 (실측)
 >
@@ -469,6 +499,72 @@ comments.parent_id  ──▶  comments.comment_id   (대댓글 self-join)
 
 ---
 
+## 댓글 감정 분석 (`sentiment` 명령)
+
+```bash
+pip install torch transformers
+python -m munpia.cli sentiment --raw data/raw --out data/features
+```
+
+본문은 `robots.txt`가 막고 있어 수집하지 않습니다. 그래서 "이 회차가 어땠나"를
+직접 잴 수 없고 독자 반응으로 대리합니다. 반응 버튼은 5종뿐인 데다 **'웃김'이
+95.9%** 를 차지해 해상도가 낮습니다. 남는 것이 댓글 본문이고, 이걸 44개 감정으로
+펼치는 것이 [KOTE](https://huggingface.co/searle-j/kote_for_easygoing_people)입니다.
+
+### 44개를 그대로 쓰지 않는 이유
+
+작품 수십 개 규모에서 회차당 44개 피처는 과적합의 지름길입니다. 그리고 이탈
+분석에서 44개가 같은 무게를 갖지 않습니다.
+
+```
+"재미없음", "지긋지긋"  → 이탈 예고. 독자가 떠나기 직전의 말이다.
+"슬픔", "공포", "절망"  → 이탈 신호가 아니다. 긴장감 있는 전개에 몰입한 반응이고,
+                          오히려 작품이 잘 작동하고 있다는 증거일 수 있다.
+```
+
+이 둘을 "부정 감정"으로 뭉뚱그리면 신호가 상쇄됩니다. 그래서 **이탈과 어떤
+관계인가**를 기준으로 9개 축으로 묶습니다.
+
+| 축 | 뜻 | 예시 라벨 |
+|---|---|---|
+| `sent_boredom` | 이탈 직전의 말 | 재미없음 · 귀찮음 · 지긋지긋 |
+| `sent_complaint` | 불만은 있지만 아직 읽는 중 | 불평/불만 · 짜증 · 실망 |
+| `sent_hostility` | 작품·작가를 향한 적대 | 화남/분노 · 증오/혐오 |
+| `sent_enjoyment` | 재미있게 읽는 중 | 즐거움/신남 · 기쁨 · 행복 |
+| `sent_anticipation` | 다음 화를 부르는 힘 | 기대감 · 신기함/관심 · 놀람 |
+| `sent_attachment` | 고정 팬층의 언어 | 아껴주는 · 존경 · 고마움 |
+| **`sent_tension`** | **몰입형 부정 정서 — 이탈 아님** | 슬픔 · 공포 · 절망 · 불안 |
+| `sent_confusion` | 전개를 못 따라가는 상태 | 당황/난처 · 의심/불신 |
+| `sent_neutral` | 감정 없음 | 없음 |
+
+`sent_churn_index` = (boredom + complaint + hostility) − (enjoyment + anticipation
++ attachment). **tension은 일부러 넣지 않습니다.**
+
+원본 44개 점수도 `comment_sentiment.csv`에 남으므로, 축 정의를 바꿔 재집계할 때
+모델을 다시 돌릴 필요가 없습니다. 이어서 실행하면 이미 채점한 댓글은 건너뜁니다.
+
+### 실측 검증
+
+실제 수집 댓글에서 감정 축과 이탈률의 상관을 보면 부호 구조가 전부 이론과 맞습니다:
+
+```
+sent_confusion    +0.149      sent_anticipation  -0.054
+sent_complaint    +0.147      sent_attachment    -0.112
+sent_churn_index  +0.144      sent_enjoyment     -0.178
+sent_hostility    +0.136
+sent_boredom      +0.096
+```
+
+> **작가 본인 댓글은 자동으로 제외됩니다.** 한 작품은 댓글의 **49.9%가 작가**였습니다
+> (작가가 모든 댓글에 답글). 작가는 독자 반응이 아니고 매 회차 등장하므로, 그대로
+> 두면 회차별 감정이 작가의 인사말로 덮이고 `returning_commenter_ratio`도 부풀려집니다.
+
+> **댓글 3건 미만 회차는 값을 비웁니다** (`--min-comments`). 댓글 1건으로 만든 감정
+> 평균을 "이 회차의 분위기"라고 부를 수 없습니다. 버리지 않고 NaN으로 두는 이유는
+> 대치 여부를 모델 쪽에서 정하고 결측 지시자로도 쓸 수 있게 하기 위해서입니다.
+
+---
+
 ## 이탈 예측 모델 (`train` 명령)
 
 `churn_step_clean`은 **계산된 관측값**이지 추론이 아닙니다. 조회수 두 개를 나눈
@@ -479,26 +575,52 @@ comments.parent_id  ──▶  comments.comment_id   (대댓글 self-join)
 python -m munpia.cli train --features data/features --raw data/raw --out data/models
 ```
 
-### 두 가지 이탈을 따로 풉니다
+### 세 가지 이탈을 따로 풉니다
 
-| task | 단위 | 라벨 | 성격 |
+| task | 표본 하나 = | 라벨 | 묻는 질문 |
 |---|---|---|---|
-| `episode` | 회차 | `churn_step_clean`이 상위 분위수를 넘는가 | 조회수 기반 **집계** 이탈 |
-| `user` | 독자 × 등장 | 이 회차를 끝으로 다시 댓글이 없는가 | 개인의 **실제** 이탈 |
+| `episode` | 회차 | `churn_step_clean`이 상위 분위수를 넘는가 | 어떤 **회차**가 위험한가 |
+| `user` | 독자 × 등장 | 이 회차를 끝으로 다시 댓글이 없는가 | 어떤 **독자**가 떠나는가 |
+| `novel` | **작품** | 초반 25화 평균 이탈률이 상위인가 | 왜 이 **작품**이 이탈이 큰가 |
 
-`user` 쪽이 이탈의 정의로는 더 곧습니다 — 조회수는 누적값이라 대리 지표지만,
-독자 재등장은 관측된 사실입니다. 대신 **댓글을 쓴 독자만 보인다**는 한계가 있어
-두 관점을 함께 봐야 합니다. `--task both`(기본값)가 둘 다 돌립니다.
+`user` 쪽이 이탈의 정의로는 가장 곧습니다 — 조회수는 대리 지표지만 독자 재등장은
+관측된 사실입니다. 대신 **댓글을 쓴 독자만 보인다**는 한계가 있습니다.
+
+`novel`은 **작품 하나가 표본 하나**입니다. 회차를 아무리 많이 모아도 이 표본은
+늘지 않습니다. 작품 10개로 돌리면 로지스틱 AUC가 1.0으로 나오는데, 폴드당 검증
+표본이 2개라서 나오는 숫자일 뿐 의미가 없습니다. **최소 200개는 모으세요.**
+
+`--task all`이 셋 다, `both`가 episode+user를 돌립니다.
 
 ### 비교하는 모델
 
 로지스틱 회귀가 주력입니다. 계수가 곧 해석이라 "연재 공백이 1 표준편차 늘면
-이탈 오즈가 N배" 같은 문장을 그대로 뽑을 수 있고, 작품 수십 개 규모에서
-트리 앙상블보다 과적합이 덜합니다. 나머지는 비선형 여지를 확인하는 대조군입니다.
+이탈 오즈가 N배" 같은 문장을 그대로 뽑을 수 있습니다.
 
-`logistic` · `random_forest` · `hist_gbm` · `dummy`(기저율 하한선)
+`logistic` · **`logistic_l1`** · `random_forest` · `hist_gbm` · `dummy`(기저율 하한선)
 
-교차검증은 항상 넷 다 돌리고, `--model`로 지정한 것만 `.joblib`으로 저장합니다.
+`logistic_l1`은 계수를 0으로 밀어 피처를 스스로 고릅니다. 표본 수백 행에 피처
+수십 개인 지금 상황에서 "무엇이 실제로 남는가"를 보는 데 L2보다 곧습니다 —
+실측에서 L2가 AUC 0.616일 때 L1은 0.701이었습니다.
+
+교차검증은 항상 다섯 다 돌리고, `--model`로 지정한 것만 `.joblib`으로 저장합니다.
+
+### ⚠️ 두 가지 평가 모드 — 숫자를 섞어 읽지 마세요
+
+`--fixed-effect`를 켜면 교차검증 방식이 **자동으로 바뀝니다.** 묻는 질문이 달라지기
+때문입니다.
+
+| 모드 | 분할 | 묻는 질문 |
+|---|---|---|
+| 기본 | `GroupKFold` (작품 단위) | 처음 보는 **작품**의 이탈을 맞힐 수 있는가 |
+| `--fixed-effect` | `StratifiedKFold` (회차 단위) | 한 작품 **안에서** 어떤 회차가 유독 빠지는가 |
+
+작품 고정효과는 작품 더미를 넣어 작품 간 차이를 통째로 흡수합니다. 그러면 남는
+변동이 순수하게 회차 간 차이가 되어 **요인 순위를 볼 때 맞는 설정**입니다.
+다만 `GroupKFold`와는 같이 쓸 수 없습니다 — 검증 폴드의 작품 더미는 학습에서
+본 적이 없어 무용지물이 되기 때문입니다. 그래서 자동으로 전환합니다.
+
+두 모드의 AUC를 나란히 비교하는 것은 의미가 없습니다.
 
 ### ⚠️ 라벨 누수 — 이 모듈이 가장 신경 쓴 부분
 
@@ -539,11 +661,13 @@ churn_step_clean = 1 - view_count / prev_view_count
 ```
 data/models/
 ├── episode_churn_cv_scores.csv     모델별 ROC-AUC / PR-AUC / Brier
+├── episode_churn_factor_rank.csv   ★ 이탈 요인 순위 (아래 참고)
 ├── episode_churn_explain.csv       계수와 오즈비 (트리 계열은 순열 중요도)
 ├── episode_churn_predictions.csv   회차별 이탈 확률 — 위험 회차 랭킹
 ├── episode_churn_summary.json      라벨 정의 · 피처 목록 · 표본 수
 ├── episode_churn_model.joblib      학습된 파이프라인
-└── user_churn_*                    (독자 단위도 같은 구성)
+├── user_churn_*                    (독자 단위)
+└── novel_churn_*                   (작품 단위)
 ```
 
 `pr_auc_lift`는 PR-AUC를 기저율로 나눈 값입니다. 불균형 라벨에서 ROC-AUC는
@@ -579,6 +703,61 @@ data/models/
 
 ---
 
+## 이탈 요인 순위
+
+`train`이 `*_factor_rank.csv`로 내놓는 결과입니다. "이탈률이 무엇에 의해
+결정되는가"에 직접 답하기 위한 산출물입니다.
+
+```
+ 순위          요인  컬럼수     중요도    표준편차   기준성능
+  1    직전 회차 성과     8   0.0451   0.0508    0.7848
+  2      페이월 구조     6   0.0169   0.0240    0.7848
+  3    독자 반응 구성     6   0.0158   0.0317    0.7848
+  4   연재 리듬(공백)     2   0.0155   0.0296    0.7848
+  5 댓글 감정(KOTE)    19   0.0135   0.0379    0.7848
+  6       연재 위치     1   0.0086   0.0325    0.7848
+  7       회차 분량     1   0.0000   0.0034    0.7848
+  8    작품 고유 특성     4  -0.0035   0.0067    0.7848
+```
+
+중요도는 **그 요인을 섞었을 때 ROC-AUC가 얼마나 떨어지는가**입니다. 클수록 그
+요인 없이는 못 맞힌다는 뜻입니다.
+
+### 설계에서 다르게 한 두 가지
+
+**그룹 단위로 섞습니다.** 개별 피처를 하나씩 섞으면 `sent_boredom`과
+`sent_complaint`처럼 상관이 높은 피처는 서로가 서로를 대신해 **둘 다 "중요하지
+않다"** 고 나옵니다. 같은 요인은 함께 섞어야 그 요인 전체의 기여가 보입니다.
+표본이 수백 행인데 피처가 수십 개인 상황에서 추정 안정성도 훨씬 낫습니다.
+
+**검증 폴드에서 섞습니다.** 학습 데이터에서 섞으면 모델이 외운 것을 재게 됩니다.
+RandomForest는 in-sample AUC가 0.97까지 올라가는데, 그 위에서 잰 순위는
+일반화되는 요인의 순위가 아닙니다. 폴드마다 학습은 train으로, 순열과 측정은
+test로 합니다. 그래서 `기준성능`이 교차검증 AUC와 같은 값으로 나옵니다.
+
+### ⚠️ 위 표를 그대로 믿으면 안 됩니다
+
+**표준편차가 중요도보다 큽니다.** 1위(0.045 ± 0.051)와 5위(0.014 ± 0.038)를
+통계적으로 구분할 수 없다는 뜻입니다. 작품 10개 · 회차 219행으로 낸 값이라
+당연한 결과입니다.
+
+요인 순위를 신뢰하려면 **작품 수**를 늘려야 합니다 — 회차가 아니라 작품입니다.
+`--task novel`은 아예 작품이 표본이고, `episode`도 교차검증을 작품 단위로
+나누므로 유효 표본이 작품 수에 묶여 있습니다.
+
+```bash
+# 요인 순위용 대량 수집 — 초반 30화만, 댓글 없이
+python -m munpia.cli discover --genres FANTASY,NEWFANTASY,HEROISM,HISTORY,ROMANCE,SPORTS,GAME,MYSTERY,LIGHTNOVEL,FUSION,DRAMA --limit 400
+python -m munpia.cli crawl --id-file data/raw/novel_ids.txt \
+    --entry-detail --max-episodes 30 --comment-scope none
+```
+
+작품당 약 45초입니다. 댓글을 빼는 이유는 댓글 페이지네이션이 전체 시간의 대부분을
+차지하기 때문입니다 — 감정 신호는 작품 수가 적어도 되는 `episode` 태스크에서
+따로 확보하고, 여기서는 작품 수를 버는 데 집중합니다.
+
+---
+
 ## 예외 처리 · 크롤링 매너 (요구사항 4)
 
 - **랜덤 딜레이** — 요청마다 `min_delay`~`max_delay` 사이 랜덤 대기. 직전 요청 경과
@@ -606,15 +785,16 @@ munpia/
 ├── preprocess.py   텍스트 정제 · 숫자 정수화 · 일시 파싱
 ├── crawler.py      작품→회차→댓글 순회 오케스트레이션
 ├── storage.py      3테이블 증분 저장 · 재개
-├── features.py     이탈률 / 팬층 파생 지표
-├── model.py        이탈 예측 — 학습셋 구성 · 누수 차단 · 교차검증 · 해석
+├── features.py     이탈률 / 팬층 / 반응 구성비 파생 지표
+├── sentiment.py    KOTE 댓글 감정 — 44개 라벨 → 9개 축 → 회차별 집계
+├── model.py        이탈 예측 — 학습셋 구성 · 누수 차단 · 교차검증 · 요인 순위
 ├── auth.py         .env 폼 로그인 · 브라우저 로그인 · 세션 진단
 ├── wizard.py       대화형 실행 마법사 (run.bat / run.sh 가 호출)
 └── cli.py          명령줄 진입점
 
 run.bat / run.sh    원클릭 런처 (Python 확인 → venv → 패키지 설치 → 실행)
-tests/              56개 테스트 (전처리 13 · 저장 6 · 인증 8 · 마법사 11
-                                 · 피처 8 · 모델 10)
+tests/              72개 테스트 (전처리 13 · 저장 6 · 인증 8 · 마법사 11
+                                 · 피처 8 · 감정 9 · 모델 17)
 scripts/explore.py  수집 결과 요약 리포트
 ```
 
@@ -709,3 +889,28 @@ prob = pipe.predict_proba(frame.X)[:, 1]
 7. **독자 단위 이탈은 댓글을 쓴 독자만 보입니다.** 조용히 읽다 떠나는 대다수는
    관측되지 않으므로, `user` task의 이탈률을 전체 독자의 이탈률로 읽으면 안 됩니다.
    회차 단위(`episode`)와 함께 봐야 합니다.
+8. **⚠️ 유료 회차의 `view_count`는 무료 회차와 다른 것을 셉니다.** 실측 10개 작품
+   전부에서, 페이월 직후 조회수가 직전의 **4.5%** 로 떨어지는 동안 추천수는 93%,
+   댓글수는 100%가 유지됐습니다. 독자가 95% 사라졌다면 추천도 같이 사라져야 합니다.
+   그렇지 않다는 것은 세는 대상이 바뀌었다는 뜻입니다. 결과적으로
+
+   - 유료 구간의 평균 이탈률이 **음수**로 나오는 작품이 있고, 회차의 24.5%가
+     "조회수 증가"로 잡힙니다
+   - `like_per_view` 같은 비율 피처는 페이월에서 **34~49배 점프**합니다
+
+   그래서 이탈 분석은 `--max-episode 25`로 **무료 구간에 한정하는 것을 권장**합니다.
+   손실은 크지 않습니다 — 초반 이탈이 압도적이기 때문입니다:
+
+   ```
+   1-5화   0.0892      26-50화  -0.0100
+   6-25화  0.0192      51-100화 -0.0026
+   ```
+
+   전 구간을 봐야 한다면 이탈 기준을 조회수 대신 추천수로 바꾸세요. 페이월에서
+   튀는 정도가 **146.8배 → 3.6배**로 줄고, 무료/유료 구간 차이도 0.0293 → 0.0080이
+   됩니다.
+9. **댓글이 무료 구간에만 있습니다.** 팬층 지표와 감정 피처의 관측 회차번호가
+   최대 25입니다. 유료 구간(26화 이상)에는 **0행**입니다. 회차의 88.6%가 유료라
+   내용 신호가 거기서 통째로 빕니다. 로그인 + `--comment-scope all`로 일부
+   완화되지만, 구매한 회차만 열리므로 근본 해결은 아닙니다.
+

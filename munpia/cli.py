@@ -181,6 +181,34 @@ def cmd_features(args) -> int:
     return 0
 
 
+def cmd_sentiment(args) -> int:
+    setup_logging(args.out, args.verbose)
+    log = logging.getLogger("munpia.cli")
+    try:
+        import pandas as pd
+        import torch  # noqa: F401
+        import transformers  # noqa: F401
+    except ImportError as exc:
+        log.error("KOTE 감정 분석에는 torch와 transformers가 필요합니다: "
+                  "pip install torch transformers (%s)", exc)
+        return 2
+    from .sentiment import run as run_sentiment
+
+    def read(name: str) -> "pd.DataFrame":
+        path = os.path.join(args.raw, "%s.csv" % name)
+        return pd.read_csv(path) if os.path.exists(path) else pd.DataFrame()
+
+    comments, novels = read("comments"), read("novels")
+    if comments.empty:
+        log.error("%s 에 comments.csv 가 없습니다", args.raw)
+        return 1
+
+    run_sentiment(comments, novels, out_dir=args.out, model_name=args.model,
+                  device=args.device, batch_size=args.batch_size,
+                  min_comments=args.min_comments)
+    return 0
+
+
 def cmd_train(args) -> int:
     setup_logging(args.out, args.verbose)
     log = logging.getLogger("munpia.cli")
@@ -199,13 +227,27 @@ def cmd_train(args) -> int:
     ep_feat = read(os.path.join(args.features, "episode_features.csv"))
     episodes = read(os.path.join(args.raw, "episodes.csv"))
     comments = read(os.path.join(args.raw, "comments.csv"))
+    novels = read(os.path.join(args.raw, "novels.csv"))
 
     if ep_feat.empty:
         log.error("%s 에 episode_features.csv 가 없습니다. 먼저 `features` 명령을 실행하세요",
                   args.features)
         return 1
 
-    tasks = ["episode", "user"] if args.task == "both" else [args.task]
+    # 감정 피처가 있으면 붙인다. 없으면 그냥 없는 채로 돌아간다 —
+    # KOTE는 선택 단계이고, 이것 때문에 학습이 막히면 안 된다.
+    sent = read(os.path.join(args.features, "episode_sentiment.csv"))
+    if sent.empty:
+        log.info("episode_sentiment.csv 가 없어 감정 피처 없이 학습합니다 "
+                 "(`sentiment` 명령으로 생성)")
+    else:
+        ep_feat = ep_feat.merge(sent, on=["novel_id", "episode_num"], how="left")
+        covered = sent["sent_churn_index"].notna().sum() if "sent_churn_index" in sent else 0
+        log.info("감정 피처 결합: 회차 %d행 중 유효 %d행 (%.1f%%)",
+                 len(ep_feat), covered, 100.0 * covered / max(len(ep_feat), 1))
+
+    tasks = (["episode", "user", "novel"] if args.task == "all"
+             else ["episode", "user"] if args.task == "both" else [args.task])
     failed = 0
     for task in tasks:
         if task == "user" and comments.empty:
@@ -217,6 +259,8 @@ def cmd_train(args) -> int:
                       threshold=args.threshold, n_splits=args.folds,
                       class_weight=(None if args.class_weight == "none"
                                     else args.class_weight),
+                      min_episode=args.min_episode, max_episode=args.max_episode,
+                      fixed_effect=args.fixed_effect, novels=novels,
                       save_model=not args.no_save_model)
         except ValueError as exc:
             # 한 태스크가 데이터 부족으로 실패해도 다른 태스크는 끝까지 돌린다
@@ -281,19 +325,41 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--verbose", "-v", action="store_true")
     sp.set_defaults(func=cmd_features)
 
+    sp = sub.add_parser("sentiment", help="댓글 감정 분석 (KOTE) → 회차별 감정 피처")
+    sp.add_argument("--raw", default="data/raw", help="comments.csv 가 있는 디렉터리")
+    sp.add_argument("--out", default="data/features")
+    sp.add_argument("--model", default="searle-j/kote_for_easygoing_people")
+    sp.add_argument("--device", type=int, default=-1, help="-1=CPU, 0 이상=GPU 번호")
+    sp.add_argument("--batch-size", type=int, default=32)
+    sp.add_argument("--min-comments", type=int, default=3,
+                    help="이 수 미만 댓글로 계산된 회차 감정은 NaN 처리")
+    sp.add_argument("--verbose", "-v", action="store_true")
+    sp.set_defaults(func=cmd_sentiment)
+
     sp = sub.add_parser("train", help="이탈 예측 모델 학습·교차검증 (scikit-learn)")
     sp.add_argument("--features", default="data/features",
                     help="episode_features.csv 가 있는 디렉터리")
     sp.add_argument("--raw", default="data/raw",
                     help="comments.csv / episodes.csv 가 있는 디렉터리")
     sp.add_argument("--out", default="data/models")
-    sp.add_argument("--task", choices=["episode", "user", "both"], default="both",
-                    help="episode=회차 이탈, user=독자 이탈")
+    sp.add_argument("--task", choices=["episode", "user", "novel", "both", "all"],
+                    default="both",
+                    help="episode=회차 이탈, user=독자 이탈, novel=작품 간 비교, all=전부")
     sp.add_argument("--model", default="logistic",
-                    choices=["logistic", "random_forest", "hist_gbm", "dummy"],
+                    choices=["logistic", "logistic_l1", "random_forest",
+                             "hist_gbm", "dummy"],
                     help="최종 저장할 모델 (교차검증은 항상 전부 비교)")
-    sp.add_argument("--label-mode", choices=["quantile", "absolute"],
-                    default="quantile", help="회차 이탈 라벨 기준")
+    sp.add_argument("--label-mode",
+                    choices=["quantile", "within_novel", "absolute"],
+                    default="quantile",
+                    help="within_novel=작품 내 분위수. 요인 순위를 볼 때 권장")
+    sp.add_argument("--min-episode", type=int, default=2,
+                    help="이 회차 번호 미만 제외 (1화는 직전 회차가 없어 라벨 없음)")
+    sp.add_argument("--max-episode", type=int, default=None,
+                    help="이 회차 번호 초과 제외. 25면 무료 구간만 (권장)")
+    sp.add_argument("--fixed-effect", action="store_true",
+                    help="작품 고정효과. 작품 간 차이를 흡수해 회차 변동만 본다. "
+                         "켜면 교차검증이 회차 단위 층화 분할로 바뀐다")
     sp.add_argument("--threshold", type=float, default=0.75,
                     help="quantile이면 분위수(0~1), absolute면 이탈률 임계값")
     sp.add_argument("--folds", type=int, default=5, help="GroupKFold 폴드 수")

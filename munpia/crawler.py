@@ -86,9 +86,8 @@ class MunpiaCrawler:
         log.info("[%d] %s / %s (%s, %d화)", novel_id, novel.title,
                  novel.author_name, novel.serial_status, novel.chapter_count)
 
+        # 자르기는 _fetch_episodes 안에서 상세 요청 전에 이미 끝났다
         episodes = self._fetch_episodes(novel_id, stamp, errors)
-        if self.max_episodes:
-            episodes = episodes[: self.max_episodes]
 
         comments: List[CommentRecord] = []
         if self.collect_comments and episodes:
@@ -184,6 +183,12 @@ class MunpiaCrawler:
 
         # 회차 번호 오름차순 = 연재 시간 순. 이탈률 계산이 이 순서를 전제한다.
         episodes.sort(key=lambda e: (e.episode_num, e.published_ts))
+
+        # 상세 요청 **전에** 자른다. 뒤에서 자르면 200화짜리 작품에서 --max-episodes 30을
+        # 줘도 상세를 200번 부르고 170개를 버린다 — 요청의 85%가 낭비되고 서버에도 그만큼
+        # 부담이다. 목록은 페이지당 100건이라 어차피 몇 번이면 끝나므로 여기서만 자르면 된다.
+        if self.max_episodes:
+            episodes = episodes[: self.max_episodes]
 
         if self.fetch_entry_detail:
             for ep in episodes:
