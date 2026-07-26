@@ -248,14 +248,46 @@ def test_factor_rank_is_out_of_fold():
     assert ranked["중요도"].is_monotonic_decreasing, "중요도 내림차순이 아닙니다"
 
 
-def test_factor_groups_cover_declared_features():
-    """선언한 피처가 어느 요인 그룹에도 안 잡히면 순위에서 조용히 빠진다."""
-    ep_feat, _, _ = _fixture()
-    frame = M.build_episode_training_frame(ep_feat, fixed_effect=True)
-    unmatched = [c for c in frame.X.columns
-                 if not any(M._match_group(c, keys)
-                            for keys in M.FACTOR_GROUPS.values())]
-    assert not unmatched, "요인 그룹에 배정되지 않은 피처: %s" % unmatched
+def _all_frames():
+    """세 태스크의 학습셋을 한 번에 만들어 준다."""
+    ep_feat, episodes, comments = _fixture(n_novels=8, n_eps=40)
+    return {
+        "episode": M.build_episode_training_frame(ep_feat, fixed_effect=True),
+        "user": M.build_user_training_frame(comments, episodes),
+        "novel": M.build_novel_training_frame(ep_feat, pd.DataFrame(),
+                                              min_episodes=5),
+    }
+
+
+def test_factor_groups_cover_every_task():
+    """세 태스크 어느 것에서도 그룹에 안 잡히는 피처가 없어야 한다.
+
+    안 잡힌 피처는 순위에서 조용히 빠진다. 그러면 결과가 "그 요인은 중요하지
+    않다"가 아니라 "그 요인을 아예 재지 않았다"가 되는데, 표만 봐서는 구분되지 않는다.
+    """
+    for task, frame in _all_frames().items():
+        unmatched = [c for c in frame.X.columns
+                     if not any(M._match_group(c, keys)
+                                for keys in M.FACTOR_GROUPS.values())]
+        assert not unmatched, "[%s] 요인 그룹에 배정되지 않은 피처: %s" % (task, unmatched)
+
+
+def test_factor_groups_do_not_overlap():
+    """한 컬럼이 두 그룹에 걸리면 두 번 순열되어 중요도가 부풀려진다."""
+    for task, frame in _all_frames().items():
+        for col in frame.X.columns:
+            hits = [name for name, keys in M.FACTOR_GROUPS.items()
+                    if M._match_group(col, keys)]
+            assert len(hits) == 1, "[%s] %s 가 %s 에 중복 배정됐습니다" % (task, col, hits)
+
+
+def test_factor_rank_covers_all_user_features():
+    """독자 태스크의 요인 순위가 피처 하나짜리로 쪼그라들면 안 된다."""
+    frame = _all_frames()["user"]
+    covered = sum(len([c for c in frame.X.columns if M._match_group(c, keys)])
+                  for keys in M.FACTOR_GROUPS.values())
+    assert covered == len(frame.X.columns), \
+        "독자 피처 %d개 중 %d개만 요인에 잡혔습니다" % (len(frame.X.columns), covered)
 
 
 def test_novel_frame_needs_enough_novels():

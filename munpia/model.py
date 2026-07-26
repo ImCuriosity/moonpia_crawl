@@ -695,19 +695,38 @@ def explain(pipe, frame: TrainingFrame) -> pd.DataFrame:
 
 
 # 요인 그룹 — 개별 컬럼이 아니라 "요인" 단위로 순위를 매기기 위한 정의.
-# 접두사/정확 이름으로 매칭한다. 순서는 출력 순서와 무관하다.
+# 접두사/정확 이름으로 매칭한다.
+#
+# 세 태스크(episode / user / novel)의 피처를 **모두** 덮어야 한다. 안 잡힌 피처는
+# 순위에서 조용히 빠지고, 그러면 "그 요인은 중요하지 않다"가 아니라 "그 요인을
+# 아예 재지 않았다"가 된다. 한 컬럼이 두 그룹에 걸려도 안 된다 — 두 번 순열되어
+# 중요도가 부풀려진다. 두 조건 모두 테스트로 잠가 뒀다.
 FACTOR_GROUPS: Dict[str, List[str]] = {
-    "연재 리듬(공백)": ["days_since_prev", "days_since_first"],
-    "회차 분량": ["pages"],
-    "연재 위치": ["episode_num"],
+    # ---------------------------------------------------------- 회차 단위
+    "연재 리듬(공백)": ["days_since_prev", "days_since_first", "gap_mean", "gap_std"],
+    "회차 분량": ["pages"],              # pages / pages_mean / pages_std
+    "연재 위치": ["episode_num", "novel_progress"],
     "페이월 구조": ["is_free", "is_paywall_boundary", "episodes_from_paywall",
-                "has_paywall", "is_adult", "is_notice"],
+                "has_paywall", "is_notice", "free_chapter_count"],
     "직전 회차 성과": ["prev_"],
-    "독자 반응 구성": ["reaction_"],
+    "독자 반응 구성": ["reaction_", "d_reaction_"],
     "댓글 감정(KOTE)": ["sent_", "d_sent_"],
-    "작품 고유 특성": ["novel_fe", "genre_main", "preference_count",
-                 "status_code", "reader_", "chapter_count",
-                 "free_chapter_count", "total_characters"],
+    # ---------------------------------------------------------- 독자 단위
+    "독자 참여 이력": ["episodes_commented_so_far", "comments_so_far",
+                 "max_consecutive_so_far", "engagement_density_so_far",
+                 "appearance_index"],
+    "독자 이탈 징후": ["gap_from_prev_appearance"],
+    "댓글 작성 양상": ["mean_body_len_so_far", "mean_like_received_so_far",
+                 "reply_ratio_so_far", "cur_"],
+    # ---------------------------------------------------------- 작품 단위
+    # 작품 속성을 한 덩어리로 두면 12개 컬럼이 뭉쳐 해상도가 사라진다.
+    # "작품이 중요하다"는 결론은 아무것도 알려주지 않으므로 쪼갠다.
+    "작품 인기도(선작)": ["preference_count"],
+    "장르": ["genre_main"],
+    "독자 인구통계": ["reader_"],
+    "작품 규모·상태": ["chapter_count", "total_characters", "status_code",
+                  "is_adult"],
+    "작품 고유(고정효과)": ["novel_fe"],
 }
 
 
