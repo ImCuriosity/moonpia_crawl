@@ -61,6 +61,21 @@ def build_episode_features(episodes: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _to_epoch_seconds(values) -> pd.Series:
+    """datetime 문자열을 유닉스 초로 바꾼다. 파싱 실패는 NaN.
+
+    `astype("int64") // 10**9` 을 쓰면 안 된다. pandas 2.0부터 to_datetime이 입력
+    정밀도에 맞춰 datetime64[s]/[us]/[ns] 중 하나를 돌려주는데, 우리 collected_at은
+    초 단위 문자열이라 datetime64[s]로 파싱된다. 그 상태에서 10**9로 나누면 값이
+    10억분의 1로 뭉개져 age_days가 -19000일 같은 값이 되고 is_mature가 전부 0이 된다.
+    Timedelta로 나누면 해상도와 무관하게 항상 초가 나온다.
+    """
+    ts = pd.to_datetime(values, errors="coerce")
+    if getattr(ts.dtype, "tz", None) is not None:
+        ts = ts.dt.tz_convert(None)
+    return (ts - pd.Timestamp("1970-01-01")) // pd.Timedelta(seconds=1)
+
+
 def _mark_maturity(df: pd.DataFrame, mature_days: float = 7.0) -> pd.DataFrame:
     """회차가 '조회수가 충분히 쌓인' 상태인지 표시한다.
 
@@ -69,13 +84,10 @@ def _mark_maturity(df: pd.DataFrame, mature_days: float = 7.0) -> pd.DataFrame:
     계산해 학습 전에 걸러낼 수 있게 한다.
     """
     # collected_at이 없거나 비었으면 그 작품에서 관측된 최신 게시시각을 기준으로 삼는다
-    fallback = df.groupby("novel_id")["published_ts"].transform("max")
+    fallback = pd.to_numeric(
+        df.groupby("novel_id")["published_ts"].transform("max"), errors="coerce")
     if "collected_at" in df.columns:
-        collected_ts = pd.to_datetime(df["collected_at"], errors="coerce")
-        collected_epoch = (collected_ts.astype("int64") // 10 ** 9
-                           if collected_ts.notna().any() else fallback)
-        collected_epoch = pd.Series(collected_epoch, index=df.index).where(
-            collected_ts.notna(), fallback)
+        collected_epoch = _to_epoch_seconds(df["collected_at"]).fillna(fallback)
     else:
         collected_epoch = fallback
 
@@ -95,7 +107,13 @@ def _mark_paywall(df: pd.DataFrame) -> pd.DataFrame:
     이것은 '작품이 재미없어서 떠난 이탈'이 아니라 '결제 장벽'이다.
     두 신호를 섞어서 학습시키면 모델이 페이월 위치를 이탈 원인으로 오학습한다.
     구분해서 쓸 수 있도록 플래그와 상대 위치를 남긴다.
+
+    경계가 실제로 존재하는 작품에만 적용한다. 수집 범위가 전부 무료(무료연재)거나
+    전부 유료면 걸러낼 경계 자체가 없으므로 원본 이탈률을 그대로 통과시킨다.
+    이 구분이 없으면 무료연재는 마지막 두 회차가, 전유료작은 전 회차가 근거 없이
+    NaN 처리되어 학습 데이터에서 통째로 사라진다.
     """
+    is_free = pd.to_numeric(df["is_free"], errors="coerce").fillna(0)
     g = df.groupby("novel_id", sort=False)
     prev_free = g["is_free"].shift(1)
 
@@ -104,16 +122,23 @@ def _mark_paywall(df: pd.DataFrame) -> pd.DataFrame:
         (prev_free == 1) & (df["is_free"] == 0)
     ).astype(int)
 
+    # 무료 회차와 유료 회차가 둘 다 있어야 경계가 존재한다
+    by_novel = is_free.groupby(df["novel_id"], sort=False)
+    has_paywall = (by_novel.transform("max") == 1) & (by_novel.transform("min") == 0)
+    df["has_paywall"] = has_paywall.astype(int)
+
     # 작품별 마지막 무료 회차 번호 — 경계까지의 거리를 재는 기준점
-    free_max = (df[df["is_free"] == 1]
+    free_max = (df[is_free == 1]
                 .groupby("novel_id")["episode_num"].max()
                 .rename("last_free_episode"))
     df = df.merge(free_max, on="novel_id", how="left")
+    df["last_free_episode"] = df["last_free_episode"].where(has_paywall.to_numpy(), np.nan)
     df["episodes_from_paywall"] = df["episode_num"] - df["last_free_episode"]
 
     # 페이월 경계 ±1화를 제외한 이탈률. 순수 콘텐츠 이탈만 보고 싶을 때 쓴다.
-    df["churn_step_ex_paywall"] = df["churn_step"].where(
-        df["episodes_from_paywall"].abs() > 1, np.nan)
+    # 경계가 없는 작품은 제외할 것이 없으므로 원본을 그대로 쓴다.
+    near_boundary = df["episodes_from_paywall"].abs() <= 1
+    df["churn_step_ex_paywall"] = df["churn_step"].where(~near_boundary, np.nan)
     return df
 
 
@@ -131,6 +156,16 @@ def _safe_div(num, den) -> pd.Series:
         num.index = den.index  # 정렬된 동일 길이 전제 — 인덱스만 맞춰준다
     with np.errstate(divide="ignore", invalid="ignore"):
         return num / den.replace(0, np.nan)
+
+
+def _as_int(value, default: int = 0) -> int:
+    """NaN/None을 default로 흘려보내는 정수 변환."""
+    if value is None or (isinstance(value, float) and value != value):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 # ------------------------------------------------------------------ 팬층 분석
@@ -154,6 +189,7 @@ def build_user_features(comments: pd.DataFrame,
     for (novel_id, user_key), grp in df.groupby(["novel_id", "user_key"], sort=False):
         eps = grp["episode_num"].dropna().astype(int).unique()
         eps.sort()
+        ts = pd.to_numeric(grp["created_ts"], errors="coerce")
         rows.append({
             "novel_id": novel_id,
             "user_key": user_key,
@@ -169,8 +205,10 @@ def build_user_features(comments: pd.DataFrame,
                                                      errors="coerce").fillna(0).mean()),
             "avg_body_len": float(pd.to_numeric(grp["body_char_len"],
                                                 errors="coerce").fillna(0).mean()),
-            "first_ts": int(pd.to_numeric(grp["created_ts"], errors="coerce").min() or 0),
-            "last_ts": int(pd.to_numeric(grp["created_ts"], errors="coerce").max() or 0),
+            # min()/max()가 NaN이면 `nan or 0`은 NaN(truthy)이라 int(NaN)에서 죽는다.
+            # 댓글 시각이 통째로 결측인 작품 하나 때문에 전체 실행이 멈추면 안 된다.
+            "first_ts": _as_int(ts.min()),
+            "last_ts": _as_int(ts.max()),
         })
 
     users = pd.DataFrame(rows)

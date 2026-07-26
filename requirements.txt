@@ -2,6 +2,10 @@
 requests>=2.31
 pandas>=1.3
 
+# 이탈 추론 (`train` 명령). 수집·전처리만 할 거면 없어도 된다.
+scikit-learn>=1.1
+joblib>=1.1
+
 # 선택 — 브라우저 로그인이 필요할 때만 (캡차·SNS 로그인·2단계 인증)
 #   pip install playwright
 #   playwright install chromium

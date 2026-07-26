@@ -4,6 +4,7 @@
     python -m munpia.cli crawl --novel-ids 587273 --out data/raw
     python -m munpia.cli discover --limit 50 --out data/raw
     python -m munpia.cli features --in data/raw --out data/features
+    python -m munpia.cli train --features data/features --raw data/raw
     python -m munpia.cli login
     python -m munpia.cli check-login --novel-id 479065
 """
@@ -180,6 +181,50 @@ def cmd_features(args) -> int:
     return 0
 
 
+def cmd_train(args) -> int:
+    setup_logging(args.out, args.verbose)
+    log = logging.getLogger("munpia.cli")
+    try:
+        import pandas as pd
+        import sklearn  # noqa: F401
+    except ImportError as exc:
+        log.error("scikit-learn과 pandas가 필요합니다: pip install scikit-learn pandas (%s)",
+                  exc)
+        return 2
+    from .model import run as run_model
+
+    def read(path: str) -> "pd.DataFrame":
+        return pd.read_csv(path) if os.path.exists(path) else pd.DataFrame()
+
+    ep_feat = read(os.path.join(args.features, "episode_features.csv"))
+    episodes = read(os.path.join(args.raw, "episodes.csv"))
+    comments = read(os.path.join(args.raw, "comments.csv"))
+
+    if ep_feat.empty:
+        log.error("%s 에 episode_features.csv 가 없습니다. 먼저 `features` 명령을 실행하세요",
+                  args.features)
+        return 1
+
+    tasks = ["episode", "user"] if args.task == "both" else [args.task]
+    failed = 0
+    for task in tasks:
+        if task == "user" and comments.empty:
+            log.warning("comments.csv 가 없어 독자 단위 학습을 건너뜁니다")
+            continue
+        try:
+            run_model(ep_feat, comments, episodes, out_dir=args.out, task=task,
+                      model=args.model, label_mode=args.label_mode,
+                      threshold=args.threshold, n_splits=args.folds,
+                      class_weight=(None if args.class_weight == "none"
+                                    else args.class_weight),
+                      save_model=not args.no_save_model)
+        except ValueError as exc:
+            # 한 태스크가 데이터 부족으로 실패해도 다른 태스크는 끝까지 돌린다
+            log.error("[%s] 학습 실패: %s", task, exc)
+            failed += 1
+    return 1 if failed == len(tasks) else 0
+
+
 def cmd_login(args) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
     from .auth import login
@@ -235,6 +280,29 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--out", default="data/features")
     sp.add_argument("--verbose", "-v", action="store_true")
     sp.set_defaults(func=cmd_features)
+
+    sp = sub.add_parser("train", help="이탈 예측 모델 학습·교차검증 (scikit-learn)")
+    sp.add_argument("--features", default="data/features",
+                    help="episode_features.csv 가 있는 디렉터리")
+    sp.add_argument("--raw", default="data/raw",
+                    help="comments.csv / episodes.csv 가 있는 디렉터리")
+    sp.add_argument("--out", default="data/models")
+    sp.add_argument("--task", choices=["episode", "user", "both"], default="both",
+                    help="episode=회차 이탈, user=독자 이탈")
+    sp.add_argument("--model", default="logistic",
+                    choices=["logistic", "random_forest", "hist_gbm", "dummy"],
+                    help="최종 저장할 모델 (교차검증은 항상 전부 비교)")
+    sp.add_argument("--label-mode", choices=["quantile", "absolute"],
+                    default="quantile", help="회차 이탈 라벨 기준")
+    sp.add_argument("--threshold", type=float, default=0.75,
+                    help="quantile이면 분위수(0~1), absolute면 이탈률 임계값")
+    sp.add_argument("--folds", type=int, default=5, help="GroupKFold 폴드 수")
+    sp.add_argument("--class-weight", choices=["none", "balanced"], default="none",
+                    help="balanced는 확률 보정을 깨뜨린다. 순위만 쓸 때만 사용")
+    sp.add_argument("--no-save-model", action="store_true",
+                    help=".joblib 저장 생략")
+    sp.add_argument("--verbose", "-v", action="store_true")
+    sp.set_defaults(func=cmd_train)
 
     sp = sub.add_parser("login", help="로그인해서 세션 쿠키 저장")
     sp.add_argument("--cookies", default="data/cookies.json")

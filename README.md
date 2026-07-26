@@ -3,13 +3,19 @@
 <p>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white">
   <img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-38%20passing-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-56%20passing-brightgreen">
   <img alt="Status" src="https://img.shields.io/badge/status-verified%20on%20live%20site-success">
 </p>
 
-웹소설 **독자 이탈률 추정**과 **고정 팬층 반응 분석**을 위한 ML 학습 데이터셋을
-만드는 도구입니다. 작품 메타데이터 · 회차별 시계열 지표 · 독자 댓글을 수집해
-정수화·구조화된 CSV/JSON으로 내보내고, 이탈률과 충성도 파생 지표까지 생성합니다.
+웹소설 **독자 이탈률 추정**과 **고정 팬층 반응 분석**을 위한 도구입니다.
+작품 메타데이터 · 회차별 시계열 지표 · 독자 댓글을 수집해 정수화·구조화된
+CSV/JSON으로 내보내고, 이탈률·충성도 파생 지표를 만든 다음,
+**scikit-learn 모델로 이탈을 예측**하는 데까지 이어집니다.
+
+```
+crawl  ──▶  features  ──▶  train
+수집        파생 지표        이탈 예측 (로지스틱 회귀 외)
+```
 
 **실측 검증 완료** (2026-07-24, 25개 작품 대상):
 
@@ -49,6 +55,7 @@ Windows에서 `run.bat` 더블클릭이면 끝납니다. → [빠른 시작](#�
 - [출력 스키마](#출력-스키마)
 - [전처리 규칙](#전처리-규칙-요구사항-34)
 - [파생 피처](#파생-피처-features-명령)
+- [이탈 예측 모델](#이탈-예측-모델-train-명령)
 - [예외 처리 · 크롤링 매너](#예외-처리--크롤링-매너-요구사항-4)
 - [구조](#구조)
 - [분석 예시](#분석-예시)
@@ -241,7 +248,15 @@ python -m munpia.cli discover --genres FANTASY,HEROISM --free-only --crawl
 python -m munpia.cli features --in data/raw --out data/features
 ```
 
-### 4. (선택) 유료 회차 댓글용 로그인
+### 4. 이탈 예측 모델 학습
+
+```bash
+python -m munpia.cli train --features data/features --raw data/raw --out data/models
+```
+
+자세한 내용은 [이탈 예측 모델](#이탈-예측-모델-train-명령) 참고.
+
+### 5. (선택) 유료 회차 댓글용 로그인
 
 `.env.example`을 복사해 자격증명을 채웁니다:
 
@@ -454,6 +469,116 @@ comments.parent_id  ──▶  comments.comment_id   (대댓글 self-join)
 
 ---
 
+## 이탈 예측 모델 (`train` 명령)
+
+`churn_step_clean`은 **계산된 관측값**이지 추론이 아닙니다. 조회수 두 개를 나눈
+산술 결과라서 이미 일어난 이탈을 사후에 기술할 뿐, "이 회차는 왜 떨어졌나",
+"다음 회차는 위험한가"에 답하지 못합니다. `train`이 그 위를 덮는 추론 레이어입니다.
+
+```bash
+python -m munpia.cli train --features data/features --raw data/raw --out data/models
+```
+
+### 두 가지 이탈을 따로 풉니다
+
+| task | 단위 | 라벨 | 성격 |
+|---|---|---|---|
+| `episode` | 회차 | `churn_step_clean`이 상위 분위수를 넘는가 | 조회수 기반 **집계** 이탈 |
+| `user` | 독자 × 등장 | 이 회차를 끝으로 다시 댓글이 없는가 | 개인의 **실제** 이탈 |
+
+`user` 쪽이 이탈의 정의로는 더 곧습니다 — 조회수는 누적값이라 대리 지표지만,
+독자 재등장은 관측된 사실입니다. 대신 **댓글을 쓴 독자만 보인다**는 한계가 있어
+두 관점을 함께 봐야 합니다. `--task both`(기본값)가 둘 다 돌립니다.
+
+### 비교하는 모델
+
+로지스틱 회귀가 주력입니다. 계수가 곧 해석이라 "연재 공백이 1 표준편차 늘면
+이탈 오즈가 N배" 같은 문장을 그대로 뽑을 수 있고, 작품 수십 개 규모에서
+트리 앙상블보다 과적합이 덜합니다. 나머지는 비선형 여지를 확인하는 대조군입니다.
+
+`logistic` · `random_forest` · `hist_gbm` · `dummy`(기저율 하한선)
+
+교차검증은 항상 넷 다 돌리고, `--model`로 지정한 것만 `.joblib`으로 저장합니다.
+
+### ⚠️ 라벨 누수 — 이 모듈이 가장 신경 쓴 부분
+
+`episode_features.csv`를 그대로 `LogisticRegression`에 넣으면 ROC-AUC가 0.99를
+넘습니다. **전부 가짜입니다.** 라벨이
+
+```
+churn_step_clean = 1 - view_count / prev_view_count
+```
+
+이므로 피처에 `view_count`나 `retention_step`, `view_vs_ma5`가 남아 있으면 모델이
+라벨을 그냥 역산합니다. `like_per_view`·`comment_per_view`도 분모가 `view_count`라
+같은 경로로 새어듭니다.
+
+그래서 이렇게 막았습니다:
+
+- **피처는 화이트리스트로 고정** (`munpia/model.py`의 `EPISODE_STATIC_FEATURES`).
+  블랙리스트가 아니라서 새 컬럼이 생겨도 자동으로 딸려 들어가지 않습니다.
+- **참여 지표는 한 칸 밀어서만** 사용 — `prev_returning_commenter_ratio` 처럼
+  직전 회차 값으로 넣습니다. 현재 회차 지표는 라벨과 같은 시점의 관측입니다.
+- **`_assert_no_leakage`가 실행 시점에 재확인** — 금지 컬럼이 섞이면 학습 전에
+  예외로 터집니다. 조용히 통과시키면 AUC 0.99를 보고 잘 됐다고 착각하게 됩니다.
+- **검증은 `GroupKFold`** — 무작위 K-Fold는 같은 작품의 회차를 학습·검증에 나눠
+  넣어서 작품별 조회수 수준을 외우게 합니다. `episode`는 `novel_id`,
+  `user`는 `user_key`로 묶습니다.
+- **전처리를 파이프라인 안에** — 스케일러를 밖에서 미리 fit 하면 검증 폴드의
+  평균·분산이 새어듭니다.
+
+### 우측 절단 (`user` task)
+
+독자의 마지막 댓글이 최신 회차에 있으면, 떠난 게 아니라 **다음 회차가 아직 안
+나온 것**일 수 있습니다. 그대로 이탈로 라벨링하면 안 되므로 작품의 마지막 3개
+회차에서의 등장은 학습에서 제외합니다 (`censor_last_n`). 조회수 쪽 `is_mature`와
+같은 취지입니다.
+
+### 출력
+
+```
+data/models/
+├── episode_churn_cv_scores.csv     모델별 ROC-AUC / PR-AUC / Brier
+├── episode_churn_explain.csv       계수와 오즈비 (트리 계열은 순열 중요도)
+├── episode_churn_predictions.csv   회차별 이탈 확률 — 위험 회차 랭킹
+├── episode_churn_summary.json      라벨 정의 · 피처 목록 · 표본 수
+├── episode_churn_model.joblib      학습된 파이프라인
+└── user_churn_*                    (독자 단위도 같은 구성)
+```
+
+`pr_auc_lift`는 PR-AUC를 기저율로 나눈 값입니다. 불균형 라벨에서 ROC-AUC는
+후하게 나오므로 이쪽을 함께 보세요. 1.0이면 무작위와 같습니다.
+
+### 주요 옵션
+
+| 옵션 | 기본값 | 설명 |
+|---|---|---|
+| `--task` | `both` | `episode` / `user` / `both` |
+| `--model` | `logistic` | 최종 저장할 모델 |
+| `--label-mode` | `quantile` | `quantile`=상위 분위수, `absolute`=절대 이탈률 |
+| `--threshold` | `0.75` | 분위수(0~1) 또는 절대 임계값 |
+| `--folds` | `5` | GroupKFold 폴드 수 (그룹 수보다 크면 자동 축소) |
+| `--class-weight` | `none` | `balanced`는 확률 보정을 깨뜨립니다 (아래 참고) |
+
+작품마다 이탈률 수준이 달라서 기본값은 분위수 기준입니다. 절대 기준이 필요하면
+`--label-mode absolute --threshold 0.05` 처럼 쓰세요.
+
+> **`--class-weight balanced`를 기본으로 쓰지 않는 이유**
+>
+> 두 태스크 모두 양성률이 25~50%라 불균형 보정이 필요 없습니다. 그런데 `balanced`를
+> 걸면 예측 확률이 위로 밀려 보정이 깨집니다 — 실측에서 로지스틱 Brier가
+> **0.181 → 0.240** 으로, 기저율만 내뱉는 `dummy`(0.189)보다도 나빠졌습니다.
+> 순위(랭킹)만 쓸 거면 영향이 없지만, `churn_prob` 값을 확률로 읽을 거면 켜지 마세요.
+
+### 표본이 부족할 때
+
+`train`이 "학습 가능한 회차가 없습니다"로 멈추면 `churn_step_clean`이 전부 비어
+있다는 뜻입니다. 수집 회차가 적거나 전부 게시 7일 미만(미성숙)인 경우입니다.
+교차검증은 그룹(작품 또는 독자)이 2개 이상 필요하고, **작품 수가 곧 유효 표본
+수**입니다. 회차를 늘리는 것보다 작품을 늘리는 쪽이 일반화에 훨씬 중요합니다.
+
+---
+
 ## 예외 처리 · 크롤링 매너 (요구사항 4)
 
 - **랜덤 딜레이** — 요청마다 `min_delay`~`max_delay` 사이 랜덤 대기. 직전 요청 경과
@@ -482,14 +607,14 @@ munpia/
 ├── crawler.py      작품→회차→댓글 순회 오케스트레이션
 ├── storage.py      3테이블 증분 저장 · 재개
 ├── features.py     이탈률 / 팬층 파생 지표
+├── model.py        이탈 예측 — 학습셋 구성 · 누수 차단 · 교차검증 · 해석
 ├── auth.py         .env 폼 로그인 · 브라우저 로그인 · 세션 진단
-└── cli.py          명령줄 진입점
-
 ├── wizard.py       대화형 실행 마법사 (run.bat / run.sh 가 호출)
 └── cli.py          명령줄 진입점
 
 run.bat / run.sh    원클릭 런처 (Python 확인 → venv → 패키지 설치 → 실행)
-tests/              38개 테스트 (전처리 13 · 저장 6 · 인증 8 · 마법사 11)
+tests/              56개 테스트 (전처리 13 · 저장 6 · 인증 8 · 마법사 11
+                                 · 피처 8 · 모델 10)
 scripts/explore.py  수집 결과 요약 리포트
 ```
 
@@ -500,7 +625,8 @@ python -m tests.run_all
 ```
 
 네트워크 없이 도는 테스트입니다. 전처리 규칙, CSV/JSONL 저장, `.env` 파싱,
-대화형 입력 처리를 검증합니다.
+대화형 입력 처리, 이탈률 계산의 경계 조건, 학습셋의 라벨 누수를 검증합니다.
+`scikit-learn`이 없으면 모델 테스트는 자동으로 건너뜁니다.
 
 ---
 
@@ -537,6 +663,30 @@ cross = (cm.groupby("user_key")
            .query("novels >= 3").sort_values("novels", ascending=False))
 ```
 
+모델을 코드에서 직접 쓸 때:
+
+```python
+from munpia.model import (build_episode_training_frame, cross_validate,
+                          fit_final, explain, predict_frame)
+
+ep = pd.read_csv("data/features/episode_features.csv")
+frame = build_episode_training_frame(ep, label_mode="quantile", threshold=0.75)
+
+print(cross_validate(frame))          # 모델 비교 — dummy가 하한선
+pipe = fit_final(frame, "logistic")
+print(explain(pipe, frame).head(10))  # 무엇이 이탈을 끌어올리는가 (오즈비)
+
+risky = predict_frame(pipe, frame).head(20)   # 이탈 확률 상위 회차
+```
+
+학습된 모델을 새 데이터에 적용:
+
+```python
+import joblib
+pipe = joblib.load("data/models/episode_churn_model.joblib")
+prob = pipe.predict_proba(frame.X)[:, 1]
+```
+
 ---
 
 ## 알려진 제약
@@ -553,3 +703,9 @@ cross = (cm.groupby("user_key")
    상대 비교에만 쓰세요.
 5. **비공개·계약종료 작품이 섞여 있습니다.** 사이트맵 ID 상당수가 `A002_12002`로
    응답합니다. 정상이며 `_errors.log`에 기록되고 건너뜁니다.
+6. **모델의 유효 표본은 회차 수가 아니라 작품 수입니다.** 교차검증을 작품 단위로
+   나누기 때문에, 25개 작품이면 사실상 25개 표본으로 일반화를 평가하는 셈입니다.
+   회차를 더 모으는 것보다 작품 수를 늘리는 쪽이 훨씬 중요합니다.
+7. **독자 단위 이탈은 댓글을 쓴 독자만 보입니다.** 조용히 읽다 떠나는 대다수는
+   관측되지 않으므로, `user` task의 이탈률을 전체 독자의 이탈률로 읽으면 안 됩니다.
+   회차 단위(`episode`)와 함께 봐야 합니다.

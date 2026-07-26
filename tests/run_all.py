@@ -10,7 +10,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-MODULES = ["test_preprocess", "test_storage", "test_auth", "test_wizard"]
+MODULES = ["test_preprocess", "test_storage", "test_auth", "test_wizard",
+           "test_features", "test_model"]
 
 
 def main() -> int:
