@@ -331,6 +331,96 @@ def build_features() -> bool:
     return True
 
 
+MODEL_DIR = os.path.join("data", "models")
+
+
+def run_sentiment() -> bool:
+    """댓글 감정 분석 (선택). torch/transformers가 있어야 한다.
+
+    수백 MB짜리 모델을 받으므로 묻지 않고 돌리지 않는다. 의존성이 없으면
+    설치 방법만 알려주고 넘어간다 — 여기서 멈추면 이미 모은 데이터가 아깝다.
+    """
+    try:
+        import pandas as pd
+        import torch  # noqa: F401
+        import transformers  # noqa: F401
+    except ImportError:
+        print("\n  댓글 감정 분석은 건너뜁니다 (torch·transformers 미설치).")
+        print("    쓰려면: pip install torch transformers")
+        return False
+
+    comments_path = os.path.join(RAW_DIR, "comments.csv")
+    if not os.path.exists(comments_path):
+        return False
+    comments = pd.read_csv(comments_path)
+    if comments.empty:
+        return False
+
+    print("\n  댓글 %d건에 감정 분석(KOTE)을 돌릴 수 있습니다." % len(comments))
+    print("  처음 한 번은 모델을 내려받느라 몇 분 걸립니다.")
+    if not ask_yes("  감정 분석을 할까요?", default=False):
+        return False
+
+    from .sentiment import run as run_kote
+    novels_path = os.path.join(RAW_DIR, "novels.csv")
+    novels = pd.read_csv(novels_path) if os.path.exists(novels_path) else pd.DataFrame()
+    try:
+        out = run_kote(comments, novels, out_dir=FEATURE_DIR)
+    except Exception as exc:
+        print("  감정 분석 실패: %s" % exc)
+        return False
+    print("  회차 감정 %d행을 만들었습니다." % len(out))
+    return True
+
+
+def train_models() -> bool:
+    """이탈 예측 모델 학습 (선택)."""
+    try:
+        import pandas as pd
+        import sklearn  # noqa: F401
+    except ImportError:
+        print("\n  모델 학습은 건너뜁니다 (scikit-learn 미설치).")
+        print("    쓰려면: pip install scikit-learn")
+        return False
+
+    ep_path = os.path.join(FEATURE_DIR, "episode_features.csv")
+    if not os.path.exists(ep_path):
+        return False
+
+    print("\n  수집한 데이터로 이탈 예측 모델을 학습할 수 있습니다.")
+    if not ask_yes("  모델을 학습할까요?", default=True):
+        return False
+
+    from .model import run as run_model
+
+    def read(d: str, name: str):
+        path = os.path.join(d, "%s.csv" % name)
+        return pd.read_csv(path) if os.path.exists(path) else pd.DataFrame()
+
+    ep_feat = pd.read_csv(ep_path)
+    sent = read(FEATURE_DIR, "episode_sentiment")
+    if not sent.empty:
+        ep_feat = ep_feat.merge(sent, on=["novel_id", "episode_num"], how="left")
+
+    episodes, comments = read(RAW_DIR, "episodes"), read(RAW_DIR, "comments")
+    novels = read(RAW_DIR, "novels")
+
+    trained = 0
+    for task in ("episode", "user", "novel"):
+        if task == "user" and comments.empty:
+            continue
+        try:
+            # 유료 구간은 조회수가 세는 대상이 바뀌어 이탈률이 성립하지 않는다.
+            # 마법사 기본값은 무료 구간(1~25화)으로 고정한다.
+            run_model(ep_feat, comments, episodes, out_dir=MODEL_DIR, task=task,
+                      max_episode=25, novels=novels)
+            trained += 1
+        except ValueError as exc:
+            # 작품 수가 적으면 작품 간 비교는 애초에 성립하지 않는다. 정상이다.
+            print("  [%s] 건너뜀 — %s" % (task, exc))
+    return trained > 0
+
+
 # ------------------------------------------------------------------- 진입점
 def main() -> int:
     logging.basicConfig(level=logging.WARNING,
@@ -360,7 +450,9 @@ def main() -> int:
         crawler.fetch_entry_detail = detail
 
         summary = run_crawl(crawler, novel_ids)
-        build_features()
+        made_features = build_features()
+        made_sentiment = run_sentiment() if made_features else False
+        trained = train_models() if made_features else False
 
         title("완료")
         print("  작품 %d건 · 회차 %d건 · 댓글 %d건을 수집했습니다."
@@ -369,9 +461,17 @@ def main() -> int:
         print("    novels.csv     작품 정보")
         print("    episodes.csv   회차별 조회수·추천수·댓글수")
         print("    comments.csv   댓글 본문 (감정 분석용)")
-        print("\n  학습용 피처   : %s" % os.path.abspath(FEATURE_DIR))
-        print("    episode_features.csv  이탈률 지표")
-        print("    user_features.csv     독자별 충성도")
+        if made_features:
+            print("\n  학습용 피처   : %s" % os.path.abspath(FEATURE_DIR))
+            print("    episode_features.csv  이탈률 지표")
+            print("    user_features.csv     독자별 충성도")
+            if made_sentiment:
+                print("    episode_sentiment.csv 회차별 댓글 감정 (KOTE)")
+        if trained:
+            print("\n  학습 결과     : %s" % os.path.abspath(MODEL_DIR))
+            print("    *_factor_rank.csv     이탈 요인 순위")
+            print("    *_cv_scores.csv       모델별 성능")
+            print("    *_predictions.csv     위험 회차·독자 랭킹")
         print("\n  자세한 설명은 README.md 를 참고하세요.")
         return 0
 
