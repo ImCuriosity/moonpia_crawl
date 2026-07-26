@@ -12,4 +12,7 @@ joblib>=1.1
 
 # 선택 — 브라우저 로그인이 필요할 때만 (캡차·SNS 로그인·2단계 인증)
 #   pip install playwright
-#   playwright install chromium
+#   python -m playwright install chromium
+#
+# `playwright install`이 PATH에 없다는 오류가 나면 위처럼 `python -m` 을 붙인다.
+# 패키지만 깔고 브라우저 바이너리를 안 받으면 창이 뜨지 않는다 — 두 줄 다 필요하다.
