@@ -16,30 +16,63 @@ import pandas as pd
 log = logging.getLogger(__name__)
 
 
+# 이탈률을 무엇으로 잴 것인가.
+#
+# 기본값이 조회수인 것은 관례일 뿐 최선이 아니다. 실측에서 유료 회차의
+# view_count는 무료 회차와 **다른 것을 센다** — 페이월 직후 조회수가 직전의
+# 4.5%로 떨어지는 동안 추천수는 93%, 댓글수는 100%가 유지됐다(10작품 전부).
+# 독자가 95% 사라졌다면 추천도 사라져야 한다. 눈금이 중간에 바뀌는 자다.
+#
+# 그래서 추천수 기준을 함께 제공한다. 페이월 경계에서 튀는 정도가
+# 146.8배(조회수) → 3.6배(추천수)로 줄고, 무료/유료 구간의 평균 이탈률 차이도
+# 0.0293 → 0.0080이 된다. 회차의 88.6%를 차지하는 유료 구간을 버리지 않아도 된다.
+#
+# reaction_total은 like_count와 100% 같은 값이라 별도 기준으로 두지 않는다.
+CHURN_BASES = {"view": "view_count", "like": "like_count"}
+
+
 # --------------------------------------------------------------- 회차 시계열
-def build_episode_features(episodes: pd.DataFrame) -> pd.DataFrame:
+def build_episode_features(episodes: pd.DataFrame,
+                           churn_basis: str = "view") -> pd.DataFrame:
     """회차 테이블에 이탈률 관련 파생 컬럼을 추가한다.
 
-    조회수는 누적값이라 회차가 뒤로 갈수록 자연 감소한다. 그 감소폭이
-    독자 이탈의 대리 지표(proxy)다.
+    Args:
+        churn_basis:
+            "view" — 조회수 기준(기본). 관례적이지만 페이월을 넘으면 척도가 바뀐다.
+                     `--max-episode 25`로 무료 구간만 볼 때 쓴다.
+            "like" — 추천수 기준. 페이월을 넘어도 척도가 유지되므로 전 구간을
+                     하나의 라벨로 쓸 수 있다. 대신 절대 규모가 작아 노이즈가 크다.
+
+    조회수/추천수 모두 누적값이라 회차가 뒤로 갈수록 자연 감소한다.
+    그 감소폭이 독자 이탈의 대리 지표(proxy)다.
     """
     if episodes.empty:
         return episodes.copy()
+    if churn_basis not in CHURN_BASES:
+        raise ValueError("churn_basis는 %s 중 하나여야 합니다: %r"
+                         % (" / ".join(CHURN_BASES), churn_basis))
 
     df = episodes.copy()
     df = df.sort_values(["novel_id", "episode_num"]).reset_index(drop=True)
     g = df.groupby("novel_id", sort=False)
 
+    base = CHURN_BASES[churn_basis]
+    df["churn_basis"] = churn_basis          # 산출물만 봐도 무엇으로 쟀는지 알게 한다
+
     df["episode_index"] = g.cumcount()                       # 0부터 시작하는 회차 순번
+    # 조회수 계열은 기준과 무관하게 진단용으로 늘 남긴다
     df["first_view_count"] = g["view_count"].transform("first")
     df["prev_view_count"] = g["view_count"].shift(1)
 
+    first_base = g[base].transform("first")
+    prev_base = g[base].shift(1)
+
     # 첫 회차 대비 잔존율 — 작품 간 비교가 가능하도록 정규화한 값
-    df["retention_from_first"] = _safe_div(df["view_count"], df["first_view_count"])
+    df["retention_from_first"] = _safe_div(df[base], first_base)
     # 직전 회차 대비 잔존율. 1 - 이 값이 해당 회차의 이탈률이다.
-    df["retention_step"] = _safe_div(df["view_count"], df["prev_view_count"])
+    df["retention_step"] = _safe_div(df[base], prev_base)
     df["churn_step"] = (1.0 - df["retention_step"]).clip(lower=-1.0, upper=1.0)
-    df.loc[df["prev_view_count"].isna(), ["retention_step", "churn_step"]] = np.nan
+    df.loc[prev_base.isna(), ["retention_step", "churn_step"]] = np.nan
 
     # 참여 강도 — 조회 대비 얼마나 반응했는가
     df["like_per_view"] = _safe_div(df["like_count"], df["view_count"])
@@ -326,9 +359,10 @@ def build_episode_audience_features(comments: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_dataset(novels: pd.DataFrame, episodes: pd.DataFrame,
-                  comments: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+                  comments: pd.DataFrame,
+                  churn_basis: str = "view") -> Tuple[pd.DataFrame, pd.DataFrame]:
     """학습에 바로 넣을 수 있는 회차 단위 테이블과 유저 단위 테이블을 만든다."""
-    ep_feat = build_episode_features(episodes)
+    ep_feat = build_episode_features(episodes, churn_basis=churn_basis)
 
     if not comments.empty:
         audience = build_episode_audience_features(comments)

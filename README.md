@@ -3,7 +3,7 @@
 <p>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white">
   <img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-74%20passing-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-77%20passing-brightgreen">
   <img alt="Status" src="https://img.shields.io/badge/status-verified%20on%20live%20site-success">
 </p>
 
@@ -465,6 +465,32 @@ comments.parent_id  ──▶  comments.comment_id   (대댓글 self-join)
 > 비교에는 쓸 수 있습니다. 절대 구성비는 작품 성향에 좌우되니 `d_*` 변화량을
 > 함께 보세요.
 
+### 이탈률을 무엇으로 잴 것인가 (`--churn-basis`)
+
+```bash
+python -m munpia.cli features --in data/raw --out data/features --churn-basis like
+```
+
+| | `view` (기본) | `like` |
+|---|---|---|
+| 기준 | 조회수 | 추천수 |
+| 페이월 경계에서 튀는 정도 | 16.7배 | **3.8배** |
+| 무료/유료 평균 이탈률 차이 | 0.0414 | **0.0187** |
+| 이탈률이 음수인 회차 | 무료 14.3% · 유료 20.8% | 무료 33.0% · 유료 35.5% |
+| **모델 AUC (같은 1~25화)** | **0.896 ± 0.007** | 0.836 ± 0.018 |
+
+**척도 일관성은 추천수가 확실히 낫지만, 라벨로서는 조회수가 낫습니다.**
+추천수는 절대 규모가 작아 회차 간 변동이 크고, 이탈률이 음수로 나오는 회차가
+3분의 1이나 됩니다. 그 노이즈 손해가 척도 일관성 이득보다 컸습니다 — 같은
+1~25화 구간에서 AUC가 0.060 낮습니다.
+
+`like`는 **유료 구간을 반드시 봐야 할 때의 차선책**으로 쓰세요. 거기서는
+조회수 기준 자체가 성립하지 않으므로 노이즈가 있어도 유일한 선택지입니다.
+기본 분석은 `view` + `--max-episode 25`가 낫습니다.
+
+> 초반 이탈 패턴은 두 기준 모두에서 보존됩니다(2화가 최대, 이후 단조 감소).
+> 순위가 바뀌는 게 아니라 신호 대 잡음비가 달라지는 것입니다.
+
 > #### ⚠️ `churn_step`을 그대로 쓰면 안 되는 이유 (실측)
 >
 > 수집 데이터에서 이탈률 상위를 뽑으면 **전부 25~26화**가 나옵니다. 작품이 갑자기
@@ -867,8 +893,8 @@ munpia/
 └── cli.py          명령줄 진입점
 
 run.bat / run.sh    원클릭 런처 (Python 확인 → venv → 패키지 설치 → 실행)
-tests/              74개 테스트 (전처리 13 · 저장 6 · 인증 8 · 마법사 11
-                                 · 피처 8 · 감정 9 · 모델 19)
+tests/              77개 테스트 (전처리 13 · 저장 6 · 인증 8 · 마법사 11
+                                 · 피처 11 · 감정 9 · 모델 19)
 scripts/explore.py  수집 결과 요약 리포트
 ```
 
@@ -983,12 +1009,12 @@ prob = pipe.predict_proba(frame.X)[:, 1]
    6-25화  0.0192      51-100화 -0.0026
    ```
 
-   전 구간을 봐야 한다면 이탈 기준을 조회수 대신 추천수로 바꾸세요. 페이월에서
-   튀는 정도가 **146.8배 → 3.6배**로 줄고, 무료/유료 구간 차이도 0.0293 → 0.0080이
-   됩니다.
+   전 구간을 봐야 한다면 `features --churn-basis like`로 이탈 기준을 추천수로
+   바꿀 수 있습니다. 다만 **기본 권장이 아닙니다** — 아래 측정 결과를 보세요.
 9. **댓글이 무료 구간에만 있습니다.** 팬층 지표와 감정 피처의 관측 회차번호가
    최대 25입니다. 유료 구간(26화 이상)에는 **0행**입니다. 회차의 88.6%가 유료라
    내용 신호가 거기서 통째로 빕니다. 로그인 + `--comment-scope all`로 일부
    완화되지만, 구매한 회차만 열리므로 근본 해결은 아닙니다.
+
 
 

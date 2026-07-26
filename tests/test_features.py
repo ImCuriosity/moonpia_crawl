@@ -131,6 +131,44 @@ def test_returning_commenter_ratio():
     assert out.loc[3, "new_commenter_ratio"] == 0.0            # 전원 기존 독자
 
 
+def test_churn_basis_switches_the_label_source():
+    """churn_basis=like면 이탈률이 추천수에서 나와야 한다."""
+    df = _episodes(20, 10, free_upto=5)
+    # 조회수는 일정하게, 추천수만 떨어뜨린다 — 기준이 바뀌면 결과도 바뀌어야 한다
+    df["view_count"] = 10000
+    df["like_count"] = [1000 - 50 * i for i in range(len(df))]
+
+    by_view = build_episode_features(df, churn_basis="view")
+    by_like = build_episode_features(df, churn_basis="like")
+
+    assert (by_view["churn_step"].dropna().abs() < 1e-9).all(), \
+        "조회수가 일정한데 조회수 기준 이탈률이 0이 아닙니다"
+    assert (by_like["churn_step"].dropna() > 0).all(), \
+        "추천수가 감소하는데 추천수 기준 이탈률이 양수가 아닙니다"
+    assert by_like["churn_basis"].eq("like").all(), "기준이 기록되지 않았습니다"
+
+
+def test_churn_basis_rejects_unknown_value():
+    """오타를 조용히 조회수 기준으로 처리하면 안 된다."""
+    try:
+        build_episode_features(_episodes(21, 5, 3), churn_basis="likes")
+    except ValueError as exc:
+        assert "churn_basis" in str(exc)
+        return
+    raise AssertionError("알 수 없는 churn_basis가 통과했습니다")
+
+
+def test_view_columns_survive_like_basis():
+    """기준을 바꿔도 조회수 계열 진단 컬럼은 남아야 한다.
+
+    페이월에서 조회수가 무너지는지 확인하려면 두 값이 다 필요하다.
+    """
+    out = build_episode_features(_episodes(22, 20, free_upto=10), churn_basis="like")
+    for col in ("view_count", "prev_view_count", "first_view_count", "view_ma5"):
+        assert col in out.columns, "%s 가 사라졌습니다" % col
+    assert out["prev_view_count"].notna().sum() == 19
+
+
 def test_empty_input_is_safe():
     """빈 테이블이 들어와도 예외 없이 빈 결과를 돌려준다."""
     assert build_episode_features(pd.DataFrame()).empty

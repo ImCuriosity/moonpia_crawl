@@ -166,7 +166,12 @@ def cmd_features(args) -> int:
         log.error("episodes 데이터가 없습니다")
         return 1
 
-    ep_feat, users = build_dataset(novels, episodes, comments)
+    ep_feat, users = build_dataset(novels, episodes, comments,
+                                   churn_basis=args.churn_basis)
+    log.info("이탈률 기준: %s (%s)", args.churn_basis,
+             "조회수 — 페이월 이후 척도가 바뀌므로 무료 구간만 권장"
+             if args.churn_basis == "view"
+             else "추천수 — 페이월을 넘어도 척도 유지, 전 구간 사용 가능")
     os.makedirs(args.out, exist_ok=True)
 
     ep_path = os.path.join(args.out, "episode_features.csv")
@@ -322,6 +327,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("features", help="원본 테이블에서 학습용 피처 생성")
     sp.add_argument("--in", dest="inp", default="data/raw")
     sp.add_argument("--out", default="data/features")
+    sp.add_argument("--churn-basis", choices=["view", "like"], default="view",
+                    help="이탈률을 무엇으로 잴 것인가. like는 페이월을 넘어도 "
+                         "척도가 유지되어 유료 구간까지 쓸 수 있다")
     sp.add_argument("--verbose", "-v", action="store_true")
     sp.set_defaults(func=cmd_features)
 
