@@ -1,0 +1,167 @@
+{
+  "task": "novel",
+  "model": "logistic",
+  "rows": 260,
+  "groups": 260,
+  "positive_rate": 0.5,
+  "label": "초반 25화 평균 이탈률 >= 0.0386 (작품 상위 50%)",
+  "cv_split": "stratified",
+  "fixed_effect": false,
+  "features": [
+    "pages_mean",
+    "pages_std",
+    "gap_mean",
+    "gap_std",
+    "reaction_best_pct_mean",
+    "reaction_funny_pct_mean",
+    "reaction_amazing_pct_mean",
+    "reaction_cheer_pct_mean",
+    "reaction_impressed_pct_mean",
+    "reaction_entropy_mean",
+    "sent_boredom_mean",
+    "sent_complaint_mean",
+    "sent_hostility_mean",
+    "sent_enjoyment_mean",
+    "sent_anticipation_mean",
+    "sent_attachment_mean",
+    "sent_tension_mean",
+    "sent_confusion_mean",
+    "sent_churn_index_mean",
+    "sent_n_comments_mean",
+    "status_code",
+    "is_adult",
+    "preference_count",
+    "chapter_count",
+    "free_chapter_count",
+    "total_characters",
+    "reader_age10s_pct",
+    "reader_age20s_pct",
+    "reader_age30s_pct",
+    "reader_age40s_pct",
+    "reader_age50s_pct",
+    "reader_male_ratio",
+    "genre_main"
+  ],
+  "cv": [
+    {
+      "model": "random_forest",
+      "roc_auc": 0.8381656804733728,
+      "roc_auc_std": 0.06384365860954241,
+      "pr_auc": 0.8168626734018091,
+      "pr_auc_lift": 1.6337253468036181,
+      "brier": 0.1581156791310457,
+      "folds": 5
+    },
+    {
+      "model": "logistic_l1",
+      "roc_auc": 0.8133136094674557,
+      "roc_auc_std": 0.0439963808029271,
+      "pr_auc": 0.8148445479153905,
+      "pr_auc_lift": 1.629689095830781,
+      "brier": 0.17245030895930077,
+      "folds": 5
+    },
+    {
+      "model": "hist_gbm",
+      "roc_auc": 0.81301775147929,
+      "roc_auc_std": 0.060666039383184316,
+      "pr_auc": 0.8109363809340726,
+      "pr_auc_lift": 1.6218727618681452,
+      "brier": 0.2079693229662129,
+      "folds": 5
+    },
+    {
+      "model": "logistic",
+      "roc_auc": 0.8091715976331362,
+      "roc_auc_std": 0.05565748539795435,
+      "pr_auc": 0.8216022722590128,
+      "pr_auc_lift": 1.6432045445180257,
+      "brier": 0.17726173436049206,
+      "folds": 5
+    },
+    {
+      "model": "dummy",
+      "roc_auc": 0.5,
+      "roc_auc_std": 0.0,
+      "pr_auc": 0.5,
+      "pr_auc_lift": 1.0,
+      "brier": 0.25,
+      "folds": 5
+    }
+  ],
+  "factor_rank_model": "random_forest",
+  "factor_rank": [
+    {
+      "순위": 1,
+      "요인": "댓글 감정(KOTE)",
+      "컬럼수": 10,
+      "중요도": 0.04144970414201186,
+      "표준편차": 0.039237161116810734,
+      "기준성능": 0.8381656804733728
+    },
+    {
+      "순위": 2,
+      "요인": "독자 반응 구성",
+      "컬럼수": 6,
+      "중요도": 0.039644970414201224,
+      "표준편차": 0.037083884010112075,
+      "기준성능": 0.8381656804733728
+    },
+    {
+      "순위": 3,
+      "요인": "작품 인기도(선작)",
+      "컬럼수": 1,
+      "중요도": 0.02766272189349115,
+      "표준편차": 0.03158517860611632,
+      "기준성능": 0.8381656804733728
+    },
+    {
+      "순위": 4,
+      "요인": "독자 인구통계",
+      "컬럼수": 6,
+      "중요도": 0.011390532544378731,
+      "표준편차": 0.02483489474064316,
+      "기준성능": 0.8381656804733728
+    },
+    {
+      "순위": 5,
+      "요인": "연재 리듬(공백)",
+      "컬럼수": 2,
+      "중요도": 0.002218934911242636,
+      "표준편차": 0.008338000397066229,
+      "기준성능": 0.8381656804733728
+    },
+    {
+      "순위": 6,
+      "요인": "장르",
+      "컬럼수": 1,
+      "중요도": 2.958579881658041e-05,
+      "표준편차": 0.003379651468136443,
+      "기준성능": 0.8381656804733728
+    },
+    {
+      "순위": 7,
+      "요인": "작품 규모·상태",
+      "컬럼수": 4,
+      "중요도": -0.0013017751479289786,
+      "표준편차": 0.006445631415927197,
+      "기준성능": 0.8381656804733728
+    },
+    {
+      "순위": 8,
+      "요인": "페이월 구조",
+      "컬럼수": 1,
+      "중요도": -0.004023668639053239,
+      "표준편차": 0.0048074874785679405,
+      "기준성능": 0.8381656804733728
+    },
+    {
+      "순위": 9,
+      "요인": "회차 분량",
+      "컬럼수": 2,
+      "중요도": -0.005384615384615372,
+      "표준편차": 0.006660156946878444,
+      "기준성능": 0.8381656804733728
+    }
+  ]
+}

@@ -1,0 +1,109 @@
+{
+  "task": "user",
+  "model": "logistic",
+  "rows": 89885,
+  "groups": 16546,
+  "positive_rate": 0.44822829170606887,
+  "label": "이 회차를 끝으로 재등장 없음 (마지막 3회차는 절단)",
+  "cv_split": "group",
+  "fixed_effect": false,
+  "features": [
+    "episode_num",
+    "novel_progress",
+    "episodes_commented_so_far",
+    "comments_so_far",
+    "max_consecutive_so_far",
+    "gap_from_prev_appearance",
+    "engagement_density_so_far",
+    "mean_body_len_so_far",
+    "mean_like_received_so_far",
+    "reply_ratio_so_far",
+    "cur_body_char_len",
+    "cur_like_count",
+    "cur_dislike_count",
+    "cur_is_reply",
+    "cur_comment_count"
+  ],
+  "cv": [
+    {
+      "model": "hist_gbm",
+      "roc_auc": 0.8442180919295088,
+      "roc_auc_std": 0.003760390245316003,
+      "pr_auc": 0.7938480665516711,
+      "pr_auc_lift": 1.771079785102558,
+      "brier": 0.1573959286224776,
+      "folds": 5
+    },
+    {
+      "model": "random_forest",
+      "roc_auc": 0.8379210446798513,
+      "roc_auc_std": 0.004288242917396994,
+      "pr_auc": 0.7826220762543962,
+      "pr_auc_lift": 1.746034533597915,
+      "brier": 0.1607757502740278,
+      "folds": 5
+    },
+    {
+      "model": "logistic_l1",
+      "roc_auc": 0.7913088577558168,
+      "roc_auc_std": 0.005817194219944698,
+      "pr_auc": 0.7279800993261181,
+      "pr_auc_lift": 1.624127956214553,
+      "brier": 0.18656907709594683,
+      "folds": 5
+    },
+    {
+      "model": "logistic",
+      "roc_auc": 0.7913026992500519,
+      "roc_auc_std": 0.005812273006530156,
+      "pr_auc": 0.7279746316065806,
+      "pr_auc_lift": 1.6241157576995582,
+      "brier": 0.18656297207757883,
+      "folds": 5
+    },
+    {
+      "model": "dummy",
+      "roc_auc": 0.5,
+      "roc_auc_std": 0.0,
+      "pr_auc": 0.4482282917060688,
+      "pr_auc_lift": 0.9999999999999999,
+      "brier": 0.24732989851374404,
+      "folds": 5
+    }
+  ],
+  "factor_rank_model": "hist_gbm",
+  "factor_rank": [
+    {
+      "순위": 1,
+      "요인": "독자 참여 이력",
+      "컬럼수": 4,
+      "중요도": 0.26547791147324235,
+      "표준편차": 0.005937418980998537,
+      "기준성능": 0.8442180919295088
+    },
+    {
+      "순위": 2,
+      "요인": "연재 위치",
+      "컬럼수": 2,
+      "중요도": 0.09421455624937089,
+      "표준편차": 0.0031132022576613226,
+      "기준성능": 0.8442180919295088
+    },
+    {
+      "순위": 3,
+      "요인": "댓글 작성 양상",
+      "컬럼수": 8,
+      "중요도": 0.018269717581239395,
+      "표준편차": 0.0020687444119949897,
+      "기준성능": 0.8442180919295088
+    },
+    {
+      "순위": 4,
+      "요인": "독자 이탈 징후",
+      "컬럼수": 1,
+      "중요도": 0.0009804300269837273,
+      "표준편차": 0.00021787965750020495,
+      "기준성능": 0.8442180919295088
+    }
+  ]
+}

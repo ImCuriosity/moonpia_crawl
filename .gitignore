@@ -17,6 +17,16 @@ data/
 *.jsonl
 !.env.example
 
+# 예외: results/ 는 **집계 결과만** 담는다.
+#   - 모델 성능, 요인 순위, 계수, 회차별 이탈 확률
+#   - 개인 식별 컬럼(user_key · nickname · blog_url · comment_uid · body)이
+#     하나라도 있는 파일은 여기에 두지 않는다. user_churn_predictions.csv 가
+#     user_key 때문에 제외된 이유다.
+#   - 새 파일을 추가할 때는 컬럼을 먼저 확인할 것.
+!results/
+!results/*.csv
+!results/*.json
+
 # ─────────────────────────────────────────────────────────────
 #  Python
 # ─────────────────────────────────────────────────────────────

@@ -1,0 +1,194 @@
+{
+  "task": "episode",
+  "model": "logistic",
+  "rows": 5923,
+  "groups": 298,
+  "positive_rate": 0.25004220834036806,
+  "label": "churn_step_clean >= 0.0621 (전체 상위 25%)",
+  "cv_split": "group",
+  "fixed_effect": false,
+  "features": [
+    "episode_num",
+    "days_since_prev",
+    "days_since_first",
+    "pages",
+    "is_free",
+    "is_adult",
+    "is_notice",
+    "is_paywall_boundary",
+    "episodes_from_paywall",
+    "has_paywall",
+    "prev_churn_step",
+    "prev_like_per_view",
+    "prev_comment_per_view",
+    "prev_reaction_per_view",
+    "prev_returning_commenter_ratio",
+    "prev_new_commenter_ratio",
+    "prev_commenter_count",
+    "prev_retention_from_first",
+    "reaction_best_pct",
+    "reaction_funny_pct",
+    "reaction_amazing_pct",
+    "reaction_cheer_pct",
+    "reaction_impressed_pct",
+    "reaction_entropy",
+    "d_reaction_best_pct",
+    "d_reaction_funny_pct",
+    "d_reaction_amazing_pct",
+    "d_reaction_cheer_pct",
+    "d_reaction_impressed_pct",
+    "d_reaction_entropy",
+    "sent_boredom",
+    "sent_complaint",
+    "sent_hostility",
+    "sent_enjoyment",
+    "sent_anticipation",
+    "sent_attachment",
+    "sent_tension",
+    "sent_confusion",
+    "sent_churn_index",
+    "sent_n_comments",
+    "d_sent_boredom",
+    "d_sent_complaint",
+    "d_sent_hostility",
+    "d_sent_enjoyment",
+    "d_sent_anticipation",
+    "d_sent_attachment",
+    "d_sent_tension",
+    "d_sent_confusion",
+    "d_sent_churn_index",
+    "preference_count",
+    "status_code",
+    "genre_main"
+  ],
+  "cv": [
+    {
+      "model": "random_forest",
+      "roc_auc": 0.8968200862106002,
+      "roc_auc_std": 0.011578703941355259,
+      "pr_auc": 0.7799029402415899,
+      "pr_auc_lift": 3.1190851553348664,
+      "brier": 0.10623274126639537,
+      "folds": 5
+    },
+    {
+      "model": "hist_gbm",
+      "roc_auc": 0.8907621580892447,
+      "roc_auc_std": 0.011535510412874747,
+      "pr_auc": 0.774381312464187,
+      "pr_auc_lift": 3.097002372535705,
+      "brier": 0.11242112591882654,
+      "folds": 5
+    },
+    {
+      "model": "logistic_l1",
+      "roc_auc": 0.8674201635123371,
+      "roc_auc_std": 0.01821152365792436,
+      "pr_auc": 0.7288893039853055,
+      "pr_auc_lift": 2.9150650557089564,
+      "brier": 0.11782064147647472,
+      "folds": 5
+    },
+    {
+      "model": "logistic",
+      "roc_auc": 0.8662962454882462,
+      "roc_auc_std": 0.018127395112560556,
+      "pr_auc": 0.7249497658631755,
+      "pr_auc_lift": 2.899309563273186,
+      "brier": 0.1184281053069333,
+      "folds": 5
+    },
+    {
+      "model": "dummy",
+      "roc_auc": 0.5,
+      "roc_auc_std": 0.0,
+      "pr_auc": 0.2500414813547725,
+      "pr_auc_lift": 0.9999970925484926,
+      "brier": 0.18763650941588214,
+      "folds": 5
+    }
+  ],
+  "factor_rank_model": "random_forest",
+  "factor_rank": [
+    {
+      "순위": 1,
+      "요인": "직전 회차 성과",
+      "컬럼수": 8,
+      "중요도": 0.06979047151228925,
+      "표준편차": 0.007101796434985918,
+      "기준성능": 0.8968200862106002
+    },
+    {
+      "순위": 2,
+      "요인": "연재 위치",
+      "컬럼수": 1,
+      "중요도": 0.025645723682419845,
+      "표준편차": 0.0044972831310075645,
+      "기준성능": 0.8968200862106002
+    },
+    {
+      "순위": 3,
+      "요인": "작품 인기도(선작)",
+      "컬럼수": 1,
+      "중요도": 0.013087741721806614,
+      "표준편차": 0.004491696848263778,
+      "기준성능": 0.8968200862106002
+    },
+    {
+      "순위": 4,
+      "요인": "독자 반응 구성",
+      "컬럼수": 12,
+      "중요도": 0.009357350944954802,
+      "표준편차": 0.0035867356985494372,
+      "기준성능": 0.8968200862106002
+    },
+    {
+      "순위": 5,
+      "요인": "페이월 구조",
+      "컬럼수": 5,
+      "중요도": 0.007397043931680274,
+      "표준편차": 0.0022077544446617208,
+      "기준성능": 0.8968200862106002
+    },
+    {
+      "순위": 6,
+      "요인": "연재 리듬(공백)",
+      "컬럼수": 2,
+      "중요도": 0.006229021616738992,
+      "표준편차": 0.002960308422264759,
+      "기준성능": 0.8968200862106002
+    },
+    {
+      "순위": 7,
+      "요인": "댓글 감정(KOTE)",
+      "컬럼수": 19,
+      "중요도": 0.00412119951445407,
+      "표준편차": 0.002537493378239912,
+      "기준성능": 0.8968200862106002
+    },
+    {
+      "순위": 8,
+      "요인": "장르",
+      "컬럼수": 1,
+      "중요도": 0.0004925590342158515,
+      "표준편차": 0.0006985552080267284,
+      "기준성능": 0.8968200862106002
+    },
+    {
+      "순위": 9,
+      "요인": "작품 규모·상태",
+      "컬럼수": 2,
+      "중요도": 0.0001811604686562851,
+      "표준편차": 0.00037533477887433716,
+      "기준성능": 0.8968200862106002
+    },
+    {
+      "순위": 10,
+      "요인": "회차 분량",
+      "컬럼수": 1,
+      "중요도": -0.00020908695957299938,
+      "표준편차": 0.0004784245748377568,
+      "기준성능": 0.8968200862106002
+    }
+  ]
+}
